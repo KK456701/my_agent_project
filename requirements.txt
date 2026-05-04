@@ -1,0 +1,31 @@
+# ============================================================
+# 辩论式多智能体代码审查系统 — 依赖
+# ============================================================
+
+# --- LangChain + LangGraph 核心 ---
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langgraph>=0.2.0
+langgraph-checkpoint>=2.0.0
+
+# --- LLM Provider（按需选择） ---
+# OpenAI / 兼容接口
+openai>=1.50.0
+
+# --- Web 框架 ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# --- 工具库 ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+rich>=13.0.0            # 终端美化输出
+
+# --- 代码分析 ---
+# (核心分析由 LLM 完成，不依赖 AST 解析工具)
+
+# --- 开发工具 ---
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
