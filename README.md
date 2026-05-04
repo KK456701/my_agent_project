@@ -168,6 +168,41 @@ my-Agentproject/
 
 ---
 
+## 🔺 Human-in-the-Loop：什么情况需要人工
+
+### 触发条件
+
+| 条件 | 说明 | 代码位置 |
+|------|------|---------|
+| **Consensus 裁决"僵局"** | 两个 Agent 的论据权重相当，AI 无法判断谁对 | `debate_round()` stalemate 分支 |
+| **达到最大辩论轮次** | 辩论 3 轮仍未共识 → 自动升级 | `MAX_DEBATE_ROUNDS = 3` |
+| **置信度不足** | Consensus Agent 判决 confidence < 0.6 | `prompts/consensus.md` 约定 |
+
+### 典型场景
+
+```
+Security: "必须参数化查询，这是 SQL 注入"        ← 安全优先
+Performance: "参数化会导致索引失效，QPS 降 30%"   ← 性能优先
+Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemate
+    ↓ 3 轮后
+→ 📋 升级给人工，附双方论据："请确认是安全优先还是性能优先"
+```
+
+### 报告中的体现
+
+```markdown
+### 🔺 需人工裁决 (2 个)
+
+- 文件: src/auth.py (行 42-45)
+  - 各方立场 (辩论 3 轮后未达成共识):
+    - security: SQL 注入风险，必须用参数化查询
+    - performance: 当前索引策略下参数化会降 30% QPS
+```
+
+> ⚡ 不是"AI 无能"，而是"AI 知道什么时候该让人类拍板"——这是负责任的设计。
+
+---
+
 ## 💡 面试 FAQ
 
 **Q: 为什么用多智能体而不是单 Agent？**
@@ -181,6 +216,9 @@ my-Agentproject/
 
 **Q: Linter 是 LangChain Tool 吗？**
 > 当前是 Pre-processing 模式（审查前秒出结果、拼进 prompt），比 Tool Calling 更高效——确定性操作不需要 Agent 花 round-trip 去"决定"调不调。升级路径已经预留。
+
+**Q: 什么情况下需要人工介入？**
+> 两个 Agent 的论据权重相当时（安全 vs 性能的二选一），Consensus Agent 会判"僵局"。辩论 3 轮未共识或置信度 < 0.6 自动升级，附带双方论据交给人类拍板。不是"AI 无能"，而是"AI 知道边界在哪"。
 
 ---
 
