@@ -116,7 +116,8 @@ class DebateState(TypedDict):
     debate_history: Annotated[List[dict], operator.add]  # 辩论历史
 
     # --- 输出 ---
-    final_report: str                          # Markdown 格式的最终报告
+    final_report: str                          # Markdown 格式（人看）
+    fixer_payload: str                         # JSON 格式（下游 Agent 消费）
     escalated: bool                            # 是否有升级给人类的问题
 
     # --- 元数据 ---

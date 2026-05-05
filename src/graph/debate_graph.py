@@ -327,10 +327,13 @@ def escalate_to_human(state: DebateState) -> dict:
 
 def generate_report(state: DebateState) -> dict:
     """
-    节点 7：生成最终审查报告
+    节点 7：生成双格式审查报告
     
-    汇总所有 Agent 的发现 + 辩论结果，生成 Markdown 报告
+    1. Markdown 报告 — 给人看（完整辩论过程）
+    2. Fixer Payload — 给下游 Agent 消费（结构化，只含可执行修复指令）
     """
+    import json as json_mod
+
     security = state.get("security_findings", [])
     performance = state.get("performance_findings", [])
     architecture = state.get("architecture_findings", [])
@@ -428,7 +431,77 @@ def generate_report(state: DebateState) -> dict:
                     report_parts.append(f"    - **{domain}**: {pos}\n")
 
     report = "".join(report_parts)
-    return {"final_report": report}
+
+    # ── 结构化 Fixer Payload（给下游 Agent 用）──
+    fixer_payload = _build_fixer_payload(
+        all_findings=(security + performance + architecture),
+        conflicts=conflicts,
+        pr_title=state.get("pr_title", ""),
+        review_mode=mode,
+    )
+
+    return {"final_report": report, "fixer_payload": fixer_payload}
+
+
+def _build_fixer_payload(
+    all_findings: list[dict],
+    conflicts: list[dict],
+    pr_title: str,
+    review_mode: str,
+) -> str:
+    """
+    构建下游 Agent 可直接消费的结构化修复指令
+    
+    格式设计原则：
+    1. 纯 JSON，去掉所有 Markdown 格式
+    2. 按严重程度排序（critical → info）
+    3. 每个 issue 只包含执行修复所需的最小信息
+    4. 已冲突裁决的 issue 带上最终决议
+    """
+    import json as json_mod
+
+    # 构建已解决的冲突映射 {file:lines → resolution}
+    resolved_map = {}
+    for c in conflicts:
+        if c.get("status") == "resolved":
+            key = f"{c.get('file', '')}:{c.get('lines', '')}"
+            resolved_map[key] = c.get("resolution", "")
+
+    # 构建 issue 列表
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    issues = []
+    for f in all_findings:
+        key = f"{f.get('file', '')}:{f.get('lines', '')}"
+        issue = {
+            "file": f.get("file", ""),
+            "lines": f.get("lines", ""),
+            "severity": f.get("severity", "info"),
+            "title": f.get("title", ""),
+            "fix": f.get("suggestion", ""),
+            "domain": f.get("domain", ""),
+        }
+        # 如果有辩论裁决，用裁决替代原始建议
+        if key in resolved_map:
+            issue["fix"] = resolved_map[key]
+            issue["debated"] = True
+        issues.append(issue)
+
+    issues.sort(key=lambda x: severity_order.get(x["severity"], 99))
+
+    payload = {
+        "meta": {
+            "pr_title": pr_title,
+            "review_mode": review_mode,
+            "total_issues": len(issues),
+            "critical_count": sum(1 for i in issues if i["severity"] == "critical"),
+            "high_count": sum(1 for i in issues if i["severity"] == "high"),
+            "format_version": "1.0",
+            "target": "fixer_agent",
+        },
+        "issues": issues,
+    }
+
+    return json_mod.dumps(payload, ensure_ascii=False, indent=2)
 
 
 # ============================================================

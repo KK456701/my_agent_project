@@ -84,6 +84,7 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
         "debate_round": 0,
         "debate_history": [],
         "final_report": "",
+        "fixer_payload": "",
         "escalated": False,
         "total_tokens": 0,
         "error": "",
@@ -96,8 +97,9 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
     else:
         report = await _stream_review(initial_state)
 
-    # 自动保存报告
+    # 自动保存报告（双格式）
     _save_report(report, output_file, title)
+    _save_fixer_payload(final_state.get("fixer_payload", ""), title)
 
     # 🧠 归档到 Markdown 记忆库
     try:
@@ -360,21 +362,29 @@ def _save_report(report: str, output_file: str = "", title: str = "") -> str:
     return str(filepath)
 
 
+def _save_fixer_payload(payload: str, title: str = "") -> str:
+    """
+    保存结构化修复指令（给下游 Fixer Agent 消费）
+    
+    与 Markdown 报告对应，文件名加 _fixer.json 后缀
+    """
+    import datetime
+
+    reports_dir = Path(__file__).parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    safe_title = title.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")[:30] if title else "review"
+    filepath = reports_dir / f"{timestamp}_{safe_title}_fixer.json"
+
+    filepath.write_text(payload, encoding="utf-8")
+    console.print(f"[dim]🤖 Fixer Payload 已保存到: {filepath}[/]")
+
+    return str(filepath)
+
+
 def _generate_fake_diff(code: str, filename: str = "demo/sample_pr.py") -> str:
     """将代码文件包装成 diff 格式（用于演示和 --file 模式）"""
     lines = code.strip().split("\n")
-    diff_lines = [
-        f"diff --git a/{filename} b/{filename}",
-        f"--- a/{filename}",
-        f"+++ b/{filename}",
-        "@@ -0,0 +1,{} @@".format(len(lines)),
-    ]
-    for line in lines:
-        diff_lines.append(f"+{line}")
-    return "\n".join(diff_lines)
-    """将代码文件包装成 diff 格式（用于演示）"""
-    lines = code.strip().split("\n")
-    filename = "demo/sample_pr.py"
     diff_lines = [
         f"diff --git a/{filename} b/{filename}",
         f"--- a/{filename}",
