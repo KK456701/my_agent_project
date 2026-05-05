@@ -257,7 +257,7 @@ Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemat
 
 ---
 
-## 💡 面试 FAQ
+## 💡 QA
 
 **Q: 这个多智能体和传统大模型对话有什么区别？**
 > 不是多轮对话！每个 Agent 是 LangGraph 编排下的一次独立 LLM 调用，用不同的 System Prompt 塑造不同"人格"。Agent 之间不直接通信，上下文通过 LangGraph State 在节点间传递。3 个 Agent 审查是 Send API 图级并行，辩论裁决是 asyncio.gather 并发。
