@@ -94,12 +94,13 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
     if no_stream:
         final_state = await debate_graph.ainvoke(initial_state)
         report = final_state.get("final_report", "审查失败，未生成报告")
+        fixer_payload = final_state.get("fixer_payload", "")
     else:
-        report = await _stream_review(initial_state)
+        report, fixer_payload = await _stream_review(initial_state)
 
     # 自动保存报告（双格式）
     _save_report(report, output_file, title)
-    _save_fixer_payload(final_state.get("fixer_payload", ""), title)
+    _save_fixer_payload(fixer_payload, title)
 
     # 🧠 归档到 Markdown 记忆库
     try:
@@ -193,6 +194,7 @@ async def _stream_review(initial_state: DebateState) -> str:
             # ── 生成报告 ──
             elif node_name == "generate_report":
                 final_report = node_output.get("final_report", "")
+                fixer_payload = node_output.get("fixer_payload", "")
                 total_time = time.time() - start_time
                 console.print(f"  [bold green]✅ 审查完成 ({total_time:.1f}s)[/]")
 
@@ -200,7 +202,7 @@ async def _stream_review(initial_state: DebateState) -> str:
             elif node_name in node_labels:
                 console.print(f"  {node_labels[node_name]}")
 
-    return final_report
+    return final_report, fixer_payload
 
 
 async def review_from_github(pr_url: str, no_stream: bool = False) -> str:
