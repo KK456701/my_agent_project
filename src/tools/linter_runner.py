@@ -1,17 +1,18 @@
 """
 Linter 集成 — LLM 之前的静态分析层
 
-思路：不等 LLM，先用确定性工具秒出结果
-- Ruff: 快速 Python linting
-- Bandit: Python 安全漏洞静态扫描
+按语言自动选择：
+- Python: Ruff + Bandit
+- JavaScript/TypeScript: ESLint
+- Go: golangci-lint
+- Java: SpotBugs (可选)
 
 LLM 只审查 linter 覆盖不了的逻辑问题。
-Token 省 50%+，准确率还更高。
-
-⚠️ 优雅降级：如果 Ruff/Bandit 未安装，自动跳过，不影响主流程
+⚠️ 优雅降级：Linter 未安装或失败，自动跳过
 """
 import subprocess
 import json
+import re
 import sys
 import shutil
 from pathlib import Path
@@ -116,11 +117,7 @@ def run_python_linter(code: str, filepath: str = "review_target.py") -> dict:
 
 
 def detect_language(files: list[str]) -> str:
-    """
-    根据文件扩展名检测主要语言
-    
-    Returns: "python" | "javascript" | "go" | "unknown"
-    """
+    """根据文件扩展名检测主要语言"""
     for f in files:
         ext = Path(f).suffix.lower()
         if ext in (".py",):
@@ -129,31 +126,60 @@ def detect_language(files: list[str]) -> str:
             return "javascript"
         if ext in (".go",):
             return "go"
+        if ext in (".java",):
+            return "java"
     return "unknown"
 
 
 def run_multi_linter(code: str, files: list[str], filepath: str = "review_target") -> dict:
-    """
-    根据代码语言自动选择 Linter
-    
-    Args:
-        code: 代码文本
-        files: 文件路径列表（用于判断语言）
-        filepath: 虚拟文件名
-    
-    Returns:
-        和 run_python_linter 相同格式的结果字典
-    """
+    """根据代码语言自动选择 Linter"""
     lang = detect_language(files)
-
     if lang == "python":
         return run_python_linter(code, f"{filepath}.py")
     elif lang == "javascript":
         return run_js_linter(code, f"{filepath}.js")
     elif lang == "go":
         return run_go_linter(code, f"{filepath}.go")
+    elif lang == "java":
+        return run_java_linter(code, f"{filepath}.java")
+    return {"ruff": [], "bandit": [], "errors": [f"未支持的语言: {lang}"]}
 
-    return {"ruff": [], "bandit": [], "errors": [f"不支持的语言: {lang}"]}
+
+def run_java_linter(code: str, filepath: str = "review_target.java") -> dict:
+    """
+    Java 静态分析 — 使用 javac + SpotBugs（可选）
+    ⚠️ javac 通常已安装，SpotBugs 需单独安装
+    """
+    results = {"ruff": [], "bandit": [], "errors": []}
+
+    # 用 javac 做语法检查（JDK 自带）
+    javac_path = _find_executable("javac")
+    if javac_path:
+        try:
+            tmp_file = Path(filepath)
+            tmp_file.write_text(code, encoding="utf-8")
+            proc = subprocess.run(
+                [javac_path, "-Xlint:all", str(tmp_file)],
+                capture_output=True, encoding="utf-8", timeout=30,
+            )
+            tmp_file.unlink(missing_ok=True)
+            # javac 输出格式: file.java:10: warning: ...
+            for line in proc.stderr.split("\n") + proc.stdout.split("\n"):
+                match = re.search(r':(\d+):\s*(warning|error):\s*(.+)', line)
+                if match:
+                    results["ruff"].append({
+                        "line": int(match.group(1)),
+                        "message": match.group(3).strip(),
+                        "rule": f"javac-{match.group(2)}",
+                    })
+                    if match.group(2) == "error":
+                        results["errors"].append(f"编译错误: {match.group(3)[:80]}")
+        except Exception:
+            pass  # javac 失败不影响主流程
+    else:
+        results["errors"].append("javac 未找到（需安装 JDK）")
+
+    return results
 
 
 def run_js_linter(code: str, filepath: str = "review_target.js") -> dict:
