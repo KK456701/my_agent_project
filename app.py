@@ -205,7 +205,7 @@ async def _stream_review(initial_state: DebateState) -> str:
     return final_report, fixer_payload
 
 
-async def review_from_github(pr_url: str, no_stream: bool = False) -> str:
+async def review_from_github(pr_url: str, no_stream: bool = False, commit_message: str = "") -> str:
     """
     从 GitHub PR URL 获取 diff 并审查
     """
@@ -226,7 +226,10 @@ async def review_from_github(pr_url: str, no_stream: bool = False) -> str:
     console.print(f"[cyan]获取 PR: {owner}/{repo}#{pr_number}")
     console.print(f"[cyan]标题: {pr_data['title']}")
 
-    return await review_diff(pr_data["diff"], pr_data["title"], no_stream=no_stream, commit_message=pr_data.get("body", ""))
+    # 用 PR 标题作为 commit_message 的补充
+    full_commit = commit_message or pr_data.get("title", "")
+
+    return await review_diff(pr_data["diff"], pr_data["title"], no_stream=no_stream, commit_message=full_commit)
 
 
 def main():
