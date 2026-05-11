@@ -27,3 +27,25 @@
 - **特征**: `time.sleep()` / 同步 I/O 在 async 上下文中
 - **修复**: `asyncio.sleep()` / 异步 I/O
 - **影响**: 阻塞事件循环
+
+---
+
+## ⚡ 确定性匹配规则（Skills Cache）
+
+```yaml
+rules:
+  - pattern: 'for\s+\w+\s+in\s+\w+:\s*\n\s*cursor\.execute\('
+    severity: critical
+    title: "N+1 查询 — 循环内执行数据库查询"
+    fix: "使用 SQL IN 子句一次查询: cursor.execute('SELECT ... WHERE id IN ({})'.format(','.join(['?']*len(ids))), ids)"
+
+  - pattern: 'for\s+\w+\s+in\s+\w+:\s*\n\s*\w+\.execute\('
+    severity: critical
+    title: "N+1 查询 — 循环内执行数据库查询"
+    fix: "使用批量查询替代逐条查询，将 N+1 次数据库往返降为 2 次"
+
+  - pattern: '\.append\(.*\)\s*\n\s*for.*\.append'
+    severity: medium
+    title: "不必要的中间列表 — 可以先 append 再遍历"
+    fix: "直接在循环中累加，省去中间列表的内存分配"
+```

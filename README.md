@@ -23,8 +23,9 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
 | 层级 | 功能 | 技术 |
 |:---:|------|------|
 | 🔧 | **静态分析** | Ruff + Bandit（< 1s，不耗 LLM Token） |
+| ⚡ | **Skills Cache** | 确定性规则匹配引擎，命中直接跳过 LLM（人确认过的模式） |
 | 📘 | **Skills 规范** | Markdown 团队规范，按文件类型 (.py/.ts/.go) 自动注入 |
-| 🧠 | **审查记忆** | Markdown 零依赖知识库，动态签名表 + 关键词加权召回 Top-5 |
+| 🧠 | **审查记忆** | Markdown 零依赖知识库，动态签名表 + 关键词加权召回 Top-5（Machine 积累） |
 | 🧭 | **智能路由** | 关键文件 × 文件类型 × Commit 语义 三维决策引擎 |
 | ⚔️ | **Agent 辩论** | Send API 并行 → 冲突检测 → Consensus 裁决 |
 | 🔺 | **人工升级** | 辩论 3 轮僵局或置信度 < 0.6 → 升级人工 |
@@ -40,13 +41,14 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
                                 │
               ┌─────────────────┼─────────────────┐
               ↓                 ↓                 ↓
-         ┌─────────┐    ┌─────────────┐    ┌──────────────────┐
-         │  Linter │    │   Skills    │    │  Memory (召回)    │
-         │ Ruff    │    │ python_sec  │    │ 扫25个.md→签名表  │
-         │ Bandit  │    │ python_perf │    │ 关键词交集→Top-5  │
-         └────┬────┘    └──────┬──────┘    └────────┬─────────┘
-              │   < 1s, 非 LLM  │               ↑
-              └─────────────────┼───────────────┘           │
+         ┌─────────┐    ┌───────────────┐    ┌──────────────────┐
+         │  Linter │    │ Skills Cache  │    │  Memory (召回)    │
+         │ Ruff    │    │ 确定性匹配引擎 │    │ 扫25个.md→签名表  │
+         │ Bandit  │    │ 命中→跳过LLM  │    │ 关键词交集→Top-5  │
+         └────┬────┘    └──────┬────────┘    └────────┬─────────┘
+              │   < 1s, 非 LLM  │ < 1ms, 0 Token   ↑               │
+              │                │  人确认过的模式    │               │
+              └────────────────┼──────────────────┘               │
                                 ↓                           │
               ┌─────────────────────────────────┐           │
               │       智能路由 (smart_router)    │           │
@@ -141,15 +143,21 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
 ### 数据流总结
 
 ```
-PR 代码 ──→ Pre-processing ──→ 智能路由 ──→ 3 Agent 并行审查 ──→ 冲突辩论 ──→ 双格式输出
-              (Linter+Skills      (1/2/3个   (各一次LLM调用,    (Consensus   (Markdown+JSON)
-               +Memory, <1s)       Agent)     互不对话)          裁决)
+PR 代码 ──→ 三层过滤 ──→ 智能路由 ──→ 3 Agent 并行审查 ──→ 冲突辩论 ──→ 双格式输出
+              (Linter+Skills    (1/2/3个   (各一次LLM调用,    (Consensus   (Markdown+JSON)
+               Cache+Memory,     Agent)     互不对话)          裁决)
+               <1s, 0 Token)
+
+三层过滤递进:
+  ① Linter (语法模式, < 1s)       → Ruff/Bandit → 17 个问题（0 Token）
+  ② Skills Cache (逻辑模式, <1ms) → 正则匹配 YAML 规则 → 跳过 LLM（0 Token）
+  ③ Agent (推理兜底)              → LLM 审查前两层覆盖不了的问题
 
 Token 消耗分布:
-  Pre-processing: 0 token（纯 Python/子进程）
-  3 Agent 审查:   ~22K input tokens（并行，等最慢）
-  辩论裁决:       ~2K/次 × 并发
-  报告生成:       0 token（纯字符串拼接）
+  Linter / Cache / Memory:  0 token（纯 Python/子进程/正则）
+  3 Agent 审查:              ~22K input tokens（并行，等最慢）
+  辩论裁决:                  ~2K/次 × 并发
+  报告生成:                  0 token（纯字符串拼接）
   ─────────────────────────
   总计:           ~25K tokens（128K 窗口绰绰有余）
 ```
@@ -228,6 +236,7 @@ my-Agentproject/
 │       ├── review_memory.py   # Markdown 审查记忆（召回 + 归档）
 │       ├── skills_loader.py   # Skills 体系（按文件类型加载）
 │       ├── linter_runner.py   # Ruff + Bandit 静态分析
+│       ├── pattern_matcher.py  # Skills Cache 确定性匹配引擎
 │       └── github_tool.py     # GitHub API 封装
 │
 ├── prompts/                   # Agent System Prompt
@@ -315,6 +324,9 @@ Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemat
 
 **Q: 什么时候需要人工介入？**
 > Consensus Agent 裁决为"僵局"（双方论据权重相当）且辩论 3 轮未共识，或置信度 < 0.6 时，自动升级。报告里用「🔺 需人工裁决」标记，附双方论据。
+
+**Q: Skills Cache、Linter、Memory 三者有什么区别？**
+> Linter（外部程序，预定义规则）只给"可疑"标记；Skills Cache（内部 YAML 规则，人确认过的）命中直接出修复方案并跳过 LLM；Memory（机器自动积累）有误召回风险，注入 prompt 让 Agent 二次确认。递进关系：Linter 查语法 → Cache 查确定模式 → Agent 查剩下的。
 
 **Q: Linter 是 LangChain Tool 吗？**
 > 当前是 Pre-processing 模式——审查前秒出结果、拼进 prompt，比 Tool Calling 更高效。确定性操作不需要 Agent 花 round-trip 去"决定"调不调。升级路径已预留。

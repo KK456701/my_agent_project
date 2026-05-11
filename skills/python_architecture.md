@@ -26,3 +26,20 @@
 - 类型注解: `def func(x: int) -> str:`
 - 上下文管理器: `with` 管理资源
 - 数据类: `@dataclass` 替代字典
+
+---
+
+## ⚡ 确定性匹配规则（Skills Cache）
+
+```yaml
+rules:
+  - pattern: 'print\(.*\)'
+    severity: medium
+    title: "审计/调试日志使用 print 而非 logging"
+    fix: "改为 logging.getLogger(__name__).info/debug/warning/error()"
+
+  - pattern: 'time\.sleep\(0\.0[1-9]\)'
+    severity: low
+    title: "使用 time.sleep() 模拟频率限制 — 阻塞线程"
+    fix: "改用异步限流器或令牌桶算法，避免阻塞主线程"
+```

@@ -111,10 +111,10 @@ async def review_node(state: DebateState) -> dict:
     """
     节点 2（可并行执行）：单个 Agent 执行审查
     
-    ⚡ 优化：
-    - diff 截断（大文件）
-    - Linter 静态分析注入（秒出结果，LLM 跳过）
-    - Skills 知识库注入（按文件类型）
+    ⚡ 三层过滤：
+    - Linter 静态分析（语法模式，<1s）
+    - Skills Cache 确定性匹配（逻辑模式，<1ms）  
+    - Agent LLM 审查（前两层覆盖不了的推理）
     """
     domain = state.get("domain", "security")
     diff = state["pr_diff"]
@@ -124,26 +124,39 @@ async def review_node(state: DebateState) -> dict:
     from src.tools.code_analyzer import truncate_diff
     diff = truncate_diff(diff, max_lines=600)
 
-    # ── Linter 静态分析（运行一次，所有 Agent 共享）──
+    diff_lines = diff.split("\n")
+
+    # ── 还原纯代码（给 Linter + Skills Cache 用）──
+    code_lines = []
+    for line in diff_lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            code_lines.append(line[1:])
+        elif not line.startswith("-") and not line.startswith("---") and not line.startswith("diff ") and not line.startswith("@@"):
+            code_lines.append(line)
+    code = "\n".join(code_lines)
+
+    # ── 第 1 层：Linter 静态分析 ──
     linter_prompt = ""
-    if domain == "security":  # 只在第一个 Agent 运行时执行 linter
+    cache_prompt = ""
+    cache_findings = []
+
+    if domain == "security":  # 只跑一次
         try:
             from src.tools.linter_runner import run_python_linter, linter_results_to_prompt
-            # 从 diff 中还原真实代码（去掉 +/- 前缀）
-            code_lines = []
-            for line in diff.split("\n"):
-                if line.startswith("+") and not line.startswith("+++"):
-                    code_lines.append(line[1:])
-                elif not line.startswith("-") and not line.startswith("---") and not line.startswith("diff ") and not line.startswith("@@"):
-                    code_lines.append(line)
-            code = "\n".join(code_lines)
-
             linter_results = run_python_linter(code)
             linter_prompt = linter_results_to_prompt(linter_results)
         except Exception:
-            pass  # Linter 失败不影响主流程
+            pass
 
-    # ── Skills 知识库 ──
+        # ── 第 2 层：Skills Cache 确定性匹配 ──
+        try:
+            from src.tools.pattern_matcher import match_code, build_cache_injection
+            cache_findings, handled_lines = match_code(code, diff_lines)
+            cache_prompt = build_cache_injection(cache_findings)
+        except Exception:
+            pass
+
+    # ── 第 3 层：Skills 知识库注入（给 Agent 参考）──
     skill_prompt = ""
     try:
         from src.tools.skills_loader import get_skill_prompt_injection
@@ -165,12 +178,23 @@ async def review_node(state: DebateState) -> dict:
 
     agent = agent_cls()
 
-    # 注入 Linter + Skills 到 Agent（在调用前修改 system prompt）
-    if linter_prompt or skill_prompt:
-        extra = (linter_prompt or "") + (skill_prompt or "")
-        agent.system_prompt = agent.system_prompt + extra
+    # 注入 Linter + Skills Cache + Skills 到 Agent
+    extra_prompts = []
+    if linter_prompt:
+        extra_prompts.append(linter_prompt)
+    if cache_prompt:
+        extra_prompts.append(cache_prompt)
+    if skill_prompt:
+        extra_prompts.append(skill_prompt)
+
+    if extra_prompts:
+        agent.system_prompt = agent.system_prompt + "\n".join(extra_prompts)
 
     findings = await agent.review(diff, files)
+
+    # Skills Cache 命中的结果追加到 findings（不走 LLM 直接加入）
+    if cache_findings:
+        findings = cache_findings + findings
 
     # 每个领域的结果写入对应字段
     result_key = f"{domain}_findings"
