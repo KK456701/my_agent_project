@@ -482,14 +482,21 @@ def generate_report(state: DebateState) -> dict:
         resolved = [c for c in adversarial if c.get("status") == "resolved"]
         escalated = [c for c in adversarial if c.get("status") == "escalated"]
         if resolved:
-            report += f"### ✅ 已裁决 ({len(resolved)})\n"
-            for c in resolved[:5]:
+            report += f"### ✅ 已裁决 ({len(resolved)})\n\n"
+            for c in resolved[:8]:
                 f = _fix(c.get('file',''))
                 da = c.get('domain_a','?')
                 db = c.get('domain_b','?')
-                report += f"- `{f}` — {da} vs {db}\n"
+                resolution = c.get('resolution', '')
+                report += f"**{da} vs {db}** — `{f}` ({c.get('lines','')})\n"
+                if resolution:
+                    report += f"> 裁决: {resolution[:200]}\n"
+                report += "\n"
         if escalated:
             report += f"\n### 🔺 需人工裁决 ({len(escalated)})\n"
+            for c in escalated:
+                f = _fix(c.get('file',''))
+                report += f"- `{f}`: 辩论 {c.get('debate_rounds',0)} 轮未共识\n"
             for c in escalated:
                 report += f"- `{c.get('file','')}` : 辩论 {c.get('debate_rounds',0)} 轮未共识\n"
 
