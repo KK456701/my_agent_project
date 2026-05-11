@@ -456,9 +456,19 @@ def generate_report(state: DebateState) -> dict:
 
     report = "".join(report_parts)
 
+    # ── 轻量质量校验（0 Token）──
+    all_findings_flat = security + performance + architecture
+    try:
+        from src.tools.quality_validator import build_quality_report
+        quality = build_quality_report(all_findings_flat, state.get("pr_files", []))
+        if quality:
+            report += quality
+    except Exception:
+        pass
+
     # ── 结构化 Fixer Payload（给下游 Agent 用）──
     fixer_payload = _build_fixer_payload(
-        all_findings=(security + performance + architecture),
+        all_findings=all_findings_flat,
         conflicts=conflicts,
         pr_title=state.get("pr_title", ""),
         review_mode=mode,
