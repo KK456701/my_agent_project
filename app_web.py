@@ -97,7 +97,6 @@ async def review(req: ReviewRequest):
         "debate_round": 0,
         "debate_history": [],
         "final_report": "",
-        "fixer_payload": "",
         "escalated": False,
         "total_tokens": 0,
         "error": "",

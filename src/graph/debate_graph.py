@@ -506,10 +506,7 @@ def generate_report(state: DebateState) -> dict:
     except Exception:
         pass
 
-    # ── Fixer Payload ──
-    fixer_payload = _build_fixer_payload(all_findings, conflicts, state.get("pr_title", ""), mode)
-
-    return {"final_report": report, "fixer_payload": fixer_payload}
+    return {"final_report": report}
 
 
 def _build_fixer_payload(
