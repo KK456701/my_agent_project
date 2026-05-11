@@ -235,8 +235,10 @@ def detect_conflicts_node(state: DebateState) -> dict:
 
 
 def decide_after_detect(state: DebateState) -> Literal["debate_round", "generate_report"]:
-    """条件边：有冲突就进入辩论，否则直接生成报告"""
-    if state.get("conflicts") and len(state["conflicts"]) > 0:
+    """只有对抗性冲突时才进辩论，正交发现直接进报告"""
+    conflicts = state.get("conflicts", [])
+    adversarial = [c for c in conflicts if c.get("adversarial") != False]
+    if adversarial:
         return "debate_round"
     return "generate_report"
 
@@ -428,6 +430,23 @@ def generate_report(state: DebateState) -> dict:
             report_parts.append(f"## {title}\n✅ 未发现问题\n")
 
     # 冲突解决结果
+    # ── 正交交叉发现（不进辩论的）──
+    try:
+        from src.tools.code_analyzer import detect_conflicts
+        orthogonal = getattr(detect_conflicts, '_last_orthogonal', [])
+        if orthogonal:
+            report_parts.append("---\n## 🔗 Agent 交叉发现（互补，无需辩论）\n\n")
+            report_parts.append(f"> {len(orthogonal)} 个问题被多个 Agent 从不同角度发现，互相补充。\n\n")
+            for c in orthogonal[:10]:
+                da = c.get('domain_a','?')
+                db = c.get('domain_b','?')
+                report_parts.append(
+                    f"- **{c.get('file','')}** ({c.get('lines','')})\n"
+                    f"  - {da} + {db} 共同关注此区域，建议互补\n"
+                )
+    except Exception:
+        pass
+
     if conflicts:
         report_parts.append("---\n## ⚔️ Agent 辩论结果\n")
 

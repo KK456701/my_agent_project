@@ -143,87 +143,65 @@ def extract_code_snippet(diff_text: str, file_path: str, line_start: int, line_e
 
 
 def detect_conflicts(findings_by_domain: dict) -> List[dict]:
-    """
-    冲突检测：找出不同 Agent 之间真正需要权衡的对立观点
-    
-    两条路径（满足任一条即为冲突）：
-    
-    路径 1：行号重叠 + 语义对立
-      同一段代码被两个 Agent 从不同角度发现问题 → 需要 trade-off
-    
-    路径 2：修复建议互斥（跨行）
-      Security 说"用 bcrypt"，Performance 说"用 SHA256"
-      → 即使行号不重叠，建议互相矛盾 → 必须裁决
-    
-    过滤：
-    - 碰巧同行但讨论完全无关的问题（SQL注入 vs 模块耦合）→ 过滤
-    - 关键词无交集的正交 finding → 过滤
-    """
-    all_findings: List[Tuple[str, dict]] = []
+    """只返回需要辩论的对抗性冲突，正交发现不上报"""
+    all_findings = []
     for domain, findings in findings_by_domain.items():
         for f in findings:
             all_findings.append((domain, f))
 
-    conflicts = []
+    adversarial = []
+    orthogonal = []
     conflict_id = 0
-    seen_pairs = set()  # 防止重复
+    seen = set()
 
-    for i, (domain_a, fa) in enumerate(all_findings):
-        for j, (domain_b, fb) in enumerate(all_findings):
-            if j <= i or domain_a == domain_b:
+    for i, (da, fa) in enumerate(all_findings):
+        for j, (db, fb) in enumerate(all_findings):
+            if j <= i or da == db:
+                continue
+            if (min(i, j), max(i, j)) in seen:
                 continue
 
-            pair_key = (min(i, j), max(i, j))
-            if pair_key in seen_pairs:
-                continue
+            la_s, la_e = _parse_line_range(fa.get("lines", "0-0"))
+            lb_s, lb_e = _parse_line_range(fb.get("lines", "0-0"))
+            lap = max(0, min(la_e, lb_e) - max(la_s, lb_s))
+            same_f = fa.get("file") == fb.get("file")
+            close = abs(la_s - lb_s) <= 5 if la_s >= 0 and lb_s >= 0 else False
+            has_line = lap > 0 or (same_f and close)
+            has_contra = _check_suggestion_contradiction(fa, fb)
 
-            # 解析行号
-            la_start, la_end = _parse_line_range(fa.get("lines", "0-0"))
-            lb_start, lb_end = _parse_line_range(fb.get("lines", "0-0"))
-
-            overlap = max(0, min(la_end, lb_end) - max(la_start, lb_start))
-            same_file = fa.get("file") == fb.get("file")
-            lines_close = abs(la_start - lb_start) <= 5 if la_start >= 0 and lb_start >= 0 else False
-
-            has_line_conflict = overlap > 0 or (same_file and lines_close)
-            has_suggestion_conflict = _check_suggestion_contradiction(fa, fb)
-
-            # ── 两条路径满足任一条 → 候选 ──
-            if not (has_line_conflict or has_suggestion_conflict):
-                continue
-
-            # ── 语义过滤 ──
-            if has_line_conflict and not has_suggestion_conflict:
-                # 行号重叠但建议不矛盾 → 检查是否真正有意义
-                if not _is_meaningful_conflict(fa, fb, domain_a, domain_b):
-                    continue
-                conflict_type = "same_line"
-            elif has_suggestion_conflict and not has_line_conflict:
-                # 建议矛盾但行号不重叠 → 跨行语义冲突
-                conflict_type = "cross_line"
+            if has_contra:
+                adv = True
+            elif has_line and _is_meaningful_conflict(fa, fb, da, db):
+                adv = True
+            elif has_line:
+                adv = False
             else:
-                # 又同行又矛盾 → 最强烈的冲突
-                conflict_type = "both"
+                continue
 
-            seen_pairs.add(pair_key)
+            seen.add((min(i, j), max(i, j)))
             conflict_id += 1
 
-            conflicts.append({
+            entry = {
                 "conflict_id": f"conflict_{conflict_id}",
                 "file": fa.get("file", ""),
-                "lines": f"{fa.get('lines','?')}  vs  {fb.get('lines','?')}",
-                "conflict_type": conflict_type,
-                "code_snippet": fa.get("code_snippet", ""),
-                "positions": {
-                    domain_a: fa.get("description", ""),
-                    domain_b: fb.get("description", ""),
-                },
+                "lines": f"行 {fa.get('lines','?')} vs 行 {fb.get('lines','?')}",
+                "positions": {da: fa.get("description", ""), db: fb.get("description", "")},
+                "adversarial": adv,
                 "status": "pending",
                 "debate_rounds": 0,
                 "resolution": "",
-            })
+            }
 
-    return conflicts
+            if adv:
+                adversarial.append(entry)
+            else:
+                orthogonal.append(entry)
+
+    detect_conflicts._last_orthogonal = orthogonal
+    return adversarial
+
+
+detect_conflicts._last_orthogonal = []
 
 
 def _is_meaningful_conflict(
