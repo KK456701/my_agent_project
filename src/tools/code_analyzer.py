@@ -144,23 +144,20 @@ def extract_code_snippet(diff_text: str, file_path: str, line_start: int, line_e
 
 def detect_conflicts(findings_by_domain: dict) -> List[dict]:
     """
-    冲突检测：找出不同 Agent 对同一代码区域的不同判断
+    冲突检测：找出不同 Agent 之间真正需要权衡的对立观点
     
-    两阶段：
-    1. 行号重叠 → 候选冲突（necessary but not sufficient）
-    2. 语义过滤 → 只保留真正的 engineering trade-off
+    两条路径（满足任一条即为冲突）：
     
-    什么叫「真正的冲突」？
-    - 不是碰巧同一行但讨论完全不同的问题（Security:SQL注入 vs Architecture:模块耦合）
-    - 而是对同一行有需要权衡的对立观点（Security:必须参数化 vs Performance:参数化会慢）
+    路径 1：行号重叠 + 语义对立
+      同一段代码被两个 Agent 从不同角度发现问题 → 需要 trade-off
     
-    判定规则（不调 LLM）：
-    A. 修复建议是否矛盾 → 真冲突（如"必须参数化" vs "不需要参数化"）
-    B. Security+Performance 同时给 high/critical 且同一行 → 可能是 trade-off
-    C. Severity 差距 ≥ 2 级 → 可能一方严重低估
-    D. 讨论的关键词有交集 → 可能相关（都在讨论"查询"），否则正交过滤
+    路径 2：修复建议互斥（跨行）
+      Security 说"用 bcrypt"，Performance 说"用 SHA256"
+      → 即使行号不重叠，建议互相矛盾 → 必须裁决
     
-    不需要 Agent 来判断——Consensus Agent 在裁决时会再次验证是否真正对立。
+    过滤：
+    - 碰巧同行但讨论完全无关的问题（SQL注入 vs 模块耦合）→ 过滤
+    - 关键词无交集的正交 finding → 过滤
     """
     all_findings: List[Tuple[str, dict]] = []
     for domain, findings in findings_by_domain.items():
@@ -169,37 +166,53 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
 
     conflicts = []
     conflict_id = 0
+    seen_pairs = set()  # 防止重复
 
     for i, (domain_a, fa) in enumerate(all_findings):
         for j, (domain_b, fb) in enumerate(all_findings):
-            if j <= i:
-                continue
-            if domain_a == domain_b:
+            if j <= i or domain_a == domain_b:
                 continue
 
-            # 阶段 1：行号重叠检查
+            pair_key = (min(i, j), max(i, j))
+            if pair_key in seen_pairs:
+                continue
+
+            # 解析行号
             la_start, la_end = _parse_line_range(fa.get("lines", "0-0"))
             lb_start, lb_end = _parse_line_range(fb.get("lines", "0-0"))
 
-            if not (la_start >= 0 and lb_start >= 0):
-                continue
-
             overlap = max(0, min(la_end, lb_end) - max(la_start, lb_start))
             same_file = fa.get("file") == fb.get("file")
-            lines_close = abs(la_start - lb_start) <= 5
+            lines_close = abs(la_start - lb_start) <= 5 if la_start >= 0 and lb_start >= 0 else False
 
-            if not (overlap > 0 or (same_file and lines_close)):
+            has_line_conflict = overlap > 0 or (same_file and lines_close)
+            has_suggestion_conflict = _check_suggestion_contradiction(fa, fb)
+
+            # ── 两条路径满足任一条 → 候选 ──
+            if not (has_line_conflict or has_suggestion_conflict):
                 continue
 
-            # 阶段 2：语义过滤 — 是否真正对立？
-            if not _is_meaningful_conflict(fa, fb, domain_a, domain_b):
-                continue
+            # ── 语义过滤 ──
+            if has_line_conflict and not has_suggestion_conflict:
+                # 行号重叠但建议不矛盾 → 检查是否真正有意义
+                if not _is_meaningful_conflict(fa, fb, domain_a, domain_b):
+                    continue
+                conflict_type = "same_line"
+            elif has_suggestion_conflict and not has_line_conflict:
+                # 建议矛盾但行号不重叠 → 跨行语义冲突
+                conflict_type = "cross_line"
+            else:
+                # 又同行又矛盾 → 最强烈的冲突
+                conflict_type = "both"
 
+            seen_pairs.add(pair_key)
             conflict_id += 1
+
             conflicts.append({
                 "conflict_id": f"conflict_{conflict_id}",
                 "file": fa.get("file", ""),
-                "lines": f"{min(la_start, lb_start)}-{max(la_end, lb_end)}",
+                "lines": f"{fa.get('lines','?')}  vs  {fb.get('lines','?')}",
+                "conflict_type": conflict_type,
                 "code_snippet": fa.get("code_snippet", ""),
                 "positions": {
                     domain_a: fa.get("description", ""),
@@ -287,6 +300,41 @@ def _extract_keywords(text: str) -> List[str]:
     for c in chinese:
         words.add(c)
     return list(words)
+
+
+def _check_suggestion_contradiction(fa: dict, fb: dict) -> bool:
+    """
+    检查两个 finding 的修复建议是否互斥（跨行语义冲突）
+    
+    不看行号，只看修复建议是否互相矛盾。
+    
+    例: Security 说"用 bcrypt" vs Performance 说"用 SHA256"
+        → 密码哈希维度上互斥 → True
+    """
+    fix_a = (fa.get("suggestion", "") + " " + fa.get("fix", "")).lower()
+    fix_b = (fb.get("suggestion", "") + " " + fb.get("fix", "")).lower()
+
+    exclusive_pairs = [
+        (["bcrypt", "argon2", "scrypt"], ["sha256", "sha-256", "md5", "sha1"]),
+        (["加密", "encrypt", "aes", "cipher"], ["明文", "plaintext", "不加密"]),
+        (["参数化", "parameterized", "placeholder"], ["拼接", "concatenat", "f-string", "sprintf"]),
+        (["缓存", "cache", "redis", "lru", "cached"], ["不缓存", "不要缓存", "remove cache"]),
+        (["异步", "async", "asyncio", "await"], ["同步", "sync", "阻塞", "blocking"]),
+        (["拆分", "abstract", "解耦", "extract"], ["内联", "inline", "合并", "不要拆分"]),
+    ]
+
+    for affirm_terms, deny_terms in exclusive_pairs:
+        a_affirms = any(t in fix_a for t in affirm_terms)
+        b_affirms = any(t in fix_b for t in affirm_terms)
+        a_denies = any(t in fix_a for t in deny_terms)
+        b_denies = any(t in fix_b for t in deny_terms)
+
+        if a_affirms and b_denies:
+            return True
+        if b_affirms and a_denies:
+            return True
+
+    return False
 
 
 def _parse_line_range(lines_str: str) -> Tuple[int, int]:
