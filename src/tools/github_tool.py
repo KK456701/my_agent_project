@@ -45,18 +45,26 @@ class GitHubPRTool:
             pr_resp.raise_for_status()
             pr_data = pr_resp.json()
 
-            # 获取 diff（使用 Accept: diff header）
+            # 获取 diff
             diff_resp = await client.get(
                 f"{self.BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}",
                 headers={**self.headers, "Accept": "application/vnd.github.v3.diff"},
             )
             diff_resp.raise_for_status()
 
+            # 获取文件列表（单独 API，changed_files 只是计数）
+            files_resp = await client.get(
+                f"{self.BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}/files",
+                headers=self.headers,
+            )
+            files_resp.raise_for_status()
+            files_list = [f["filename"] for f in (files_resp.json() or [])]
+
             return {
                 "title": pr_data.get("title", ""),
                 "body": pr_data.get("body", "") or "",
                 "diff": diff_resp.text,
-                "files": [f["filename"] for f in pr_data.get("changed_files", [])],
+                "files": files_list,
             }
 
     async def post_review_comment(
