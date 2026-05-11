@@ -58,7 +58,7 @@ def run_python_linter(code: str, filepath: str = "review_target.py") -> dict:
                 [ruff_path, "check", "--output-format", "json", "--stdin-filename", filepath, "-"],
                 input=code,
                 capture_output=True,
-                encoding="utf-8",
+                encoding="utf-8", errors="replace",
                 timeout=30,
             )
             if proc.returncode in (0, 1):
@@ -93,7 +93,7 @@ def run_python_linter(code: str, filepath: str = "review_target.py") -> dict:
             proc = subprocess.run(
                 [bandit_path, "-f", "json", "-q", str(tmp_file)],
                 capture_output=True,
-                encoding="utf-8",
+                encoding="utf-8", errors="replace",
                 timeout=30,
             )
             tmp_file.unlink(missing_ok=True)
@@ -160,7 +160,7 @@ def run_java_linter(code: str, filepath: str = "review_target.java") -> dict:
             tmp_file.write_text(code, encoding="utf-8")
             proc = subprocess.run(
                 [javac_path, "-Xlint:all", str(tmp_file)],
-                capture_output=True, encoding="utf-8", timeout=30,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
             )
             tmp_file.unlink(missing_ok=True)
             # javac 输出格式: file.java:10: warning: ...
@@ -202,7 +202,7 @@ def run_js_linter(code: str, filepath: str = "review_target.js") -> dict:
 
         proc = subprocess.run(
             [eslint_path, "--format", "json", str(tmp_file)],
-            capture_output=True, encoding="utf-8", timeout=30,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
         tmp_file.unlink(missing_ok=True)
 
@@ -244,7 +244,7 @@ def run_go_linter(code: str, filepath: str = "review_target.go") -> dict:
 
         proc = subprocess.run(
             [golangci_path, "run", "--out-format", "json", str(tmp_file)],
-            capture_output=True, encoding="utf-8", timeout=30,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
         tmp_file.unlink(missing_ok=True)
 
