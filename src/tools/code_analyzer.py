@@ -186,6 +186,8 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
                 "file": fa.get("file", ""),
                 "lines": f"行 {fa.get('lines','?')} vs 行 {fb.get('lines','?')}",
                 "positions": {da: fa.get("description", ""), db: fb.get("description", "")},
+                "domain_a": da,
+                "domain_b": db,
                 "adversarial": adv,
                 "status": "pending",
                 "debate_rounds": 0,

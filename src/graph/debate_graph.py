@@ -391,6 +391,11 @@ def generate_report(state: DebateState) -> dict:
     except Exception:
         pass
 
+    # ── Skills 列表 ──
+    skills_list = ""
+    default_file = (state.get("pr_files") or ["unknown"])[0] if state.get("pr_files") else "unknown"
+    _fix = lambda f: f if f and f != "see diff" else default_file
+
     # ── 正交交叉发现 ──
     orthogonal_section = ""
     try:
@@ -399,7 +404,10 @@ def generate_report(state: DebateState) -> dict:
         if orthogonal:
             orthogonal_section = f"\n\n---\n## 🔗 Agent 交叉发现（互补，无需辩论）\n\n> {len(orthogonal)} 处代码被多个 Agent 从不同角度关注。\n\n"
             for c in orthogonal[:8]:
-                orthogonal_section += f"- `{c.get('file','')}` — {c.get('domain_a','?')} + {c.get('domain_b','?')} 共同关注\n"
+                f = _fix(c.get('file',''))
+                da = c.get('domain_a','?')
+                db = c.get('domain_b','?')
+                orthogonal_section += f"- `{f}` — {da} + {db} 共同关注\n"
     except Exception:
         pass
 
@@ -455,7 +463,7 @@ def generate_report(state: DebateState) -> dict:
         source = f.get("source", "agent")
         source_tag = {"skills_cache": "⚡Cache", "agent": "🤖Agent"}.get(source, "🤖Agent")
         domain = f.get("domain", "?")
-        file = f.get("file", "?")
+        file = _fix(f.get("file", "?"))
         lines = f.get("lines", "?")
         title = f.get("title", "未命名")
         fix = f.get("suggestion", f.get("fix", "—"))
@@ -476,7 +484,10 @@ def generate_report(state: DebateState) -> dict:
         if resolved:
             report += f"### ✅ 已裁决 ({len(resolved)})\n"
             for c in resolved[:5]:
-                report += f"- `{c.get('file','')}` — {', '.join(c.get('positions',{}).keys())[:60]}\n"
+                f = _fix(c.get('file',''))
+                da = c.get('domain_a','?')
+                db = c.get('domain_b','?')
+                report += f"- `{f}` — {da} vs {db}\n"
         if escalated:
             report += f"\n### 🔺 需人工裁决 ({len(escalated)})\n"
             for c in escalated:
