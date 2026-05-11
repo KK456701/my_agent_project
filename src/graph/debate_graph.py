@@ -353,29 +353,29 @@ def escalate_to_human(state: DebateState) -> dict:
 
 def generate_report(state: DebateState) -> dict:
     """
-    节点 7：生成双格式审查报告
-    
-    1. Markdown 报告 — 给人看（完整辩论过程）
-    2. Fixer Payload — 给下游 Agent 消费（结构化，只含可执行修复指令）
+    节点 7：生成最终审查报告（按严重程度排序，融合所有来源）
     """
-    import json as json_mod
-
     security = state.get("security_findings", [])
     performance = state.get("performance_findings", [])
     architecture = state.get("architecture_findings", [])
     conflicts = state.get("conflicts", [])
     debate_round = state.get("debate_round", 0)
     mode = state.get("review_mode", "fast")
+    all_findings = security + performance + architecture
 
-    report_parts = [
-        f"# 🔍 多智能体代码审查报告\n",
-        f"**审查模式**: {mode}",
-        f"**辩论轮次**: {debate_round}",
-        f"**PR 标题**: {state.get('pr_title', 'N/A')}\n",
-        "---\n",
-    ]
+    # ── 统计 ──
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    cache_count = 0
+    agent_count = 0
+    for f in all_findings:
+        sev_counts[f.get("severity", "low")] = sev_counts.get(f.get("severity", "low"), 0) + 1
+        if f.get("source") == "skills_cache":
+            cache_count += 1
+        else:
+            agent_count += 1
 
-    # ── Linter 静态分析（非 LLM，秒出结果）──
+    # ── Linter 结果 ──
+    linter_section = ""
     try:
         from src.tools.linter_runner import run_multi_linter, linter_results_to_prompt
         diff = state.get("pr_diff", "")
@@ -387,111 +387,116 @@ def generate_report(state: DebateState) -> dict:
                 code_lines.append(line)
         code = "\n".join(code_lines)
         lr = run_multi_linter(code, state.get("pr_files", []))
-        lp = linter_results_to_prompt(lr)
-        if lp:
-            report_parts.append(lp)
+        linter_section = linter_results_to_prompt(lr) or ""
     except Exception:
         pass
 
-    # ── Skills 知识库摘要 ──
-    try:
-        from src.tools.skills_loader import load_skills_for_files
-        skills = load_skills_for_files(state.get("pr_files", []))
-        if skills:
-            report_parts.append("\n\n---\n## 📘 已加载的团队编码规范 (Skills)\n")
-            for domain, content in skills.items():
-                dc = {"security": "🛡️ 安全", "performance": "⚡ 性能", "architecture": "🏗️ 架构"}.get(domain, domain)
-                report_parts.append(f"- {dc}: {len(content)} 字符的团队最佳实践已注入审查\n")
-    except Exception:
-        pass
-
-    # 各 Agent 发现
-    all_domain_findings = {
-        "🛡️ 安全检查": security,
-        "⚡ 性能分析": performance,
-        "🏗️ 架构审查": architecture,
-    }
-
-    for title, findings in all_domain_findings.items():
-        if findings:
-            report_parts.append(f"## {title} ({len(findings)} 个问题)\n")
-            for f in findings:
-                sev_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢", "info": "ℹ️"}
-                emoji = sev_emoji.get(f.get("severity", "info"), "⚪")
-                report_parts.append(
-                    f"### {emoji} {f.get('title', '未命名')}\n"
-                    f"- **文件**: `{f.get('file', 'N/A')}`\n"
-                    f"- **行号**: {f.get('lines', 'N/A')}\n"
-                    f"- **严重程度**: {f.get('severity', 'N/A')}\n"
-                    f"- **描述**: {f.get('description', 'N/A')}\n"
-                    f"- **建议**: {f.get('suggestion', 'N/A')}\n"
-                )
-        else:
-            report_parts.append(f"## {title}\n✅ 未发现问题\n")
-
-    # 冲突解决结果
-    # ── 正交交叉发现（不进辩论的）──
+    # ── 正交交叉发现 ──
+    orthogonal_section = ""
     try:
         from src.tools.code_analyzer import detect_conflicts
         orthogonal = getattr(detect_conflicts, '_last_orthogonal', [])
         if orthogonal:
-            report_parts.append("---\n## 🔗 Agent 交叉发现（互补，无需辩论）\n\n")
-            report_parts.append(f"> {len(orthogonal)} 个问题被多个 Agent 从不同角度发现，互相补充。\n\n")
-            for c in orthogonal[:10]:
-                da = c.get('domain_a','?')
-                db = c.get('domain_b','?')
-                report_parts.append(
-                    f"- **{c.get('file','')}** ({c.get('lines','')})\n"
-                    f"  - {da} + {db} 共同关注此区域，建议互补\n"
-                )
+            orthogonal_section = f"\n\n---\n## 🔗 Agent 交叉发现（互补，无需辩论）\n\n> {len(orthogonal)} 处代码被多个 Agent 从不同角度关注。\n\n"
+            for c in orthogonal[:8]:
+                orthogonal_section += f"- `{c.get('file','')}` — {c.get('domain_a','?')} + {c.get('domain_b','?')} 共同关注\n"
     except Exception:
         pass
 
-    if conflicts:
-        report_parts.append("---\n## ⚔️ Agent 辩论结果\n")
+    # ── Skills 列表 ──
+    skills_list = ""
+    try:
+        from src.tools.skills_loader import load_skills_for_files
+        skills = load_skills_for_files(state.get("pr_files", []))
+        if skills:
+            skills_list = ", ".join(skills.keys())
+    except Exception:
+        pass
 
-        resolved_conflicts = [c for c in conflicts if c.get("status") == "resolved"]
-        escalated_conflicts = [c for c in conflicts if c.get("status") == "escalated"]
+    # ============ 生成报告 ============
+    total = len(all_findings)
+    critic = sev_counts.get("critical", 0)
+    high = sev_counts.get("high", 0)
+    mid = sev_counts.get("medium", 0)
+    low = sev_counts.get("low", 0)
 
-        if resolved_conflicts:
-            report_parts.append(f"### ✅ 已达成共识 ({len(resolved_conflicts)} 个)\n")
-            for c in resolved_conflicts:
-                report_parts.append(
-                    f"- **文件**: `{c.get('file', '')}` (行 {c.get('lines', '')})\n"
-                    f"  - 各方立场: {list(c.get('positions', {}).keys())}\n"
-                    f"  - 裁决: {c.get('resolution', '')}\n"
-                    f"  - 理由: {c.get('reasoning', '')}\n"
-                )
+    report = f"""# 🔍 代码审查报告
 
-        if escalated_conflicts:
-            report_parts.append(f"\n### 🔺 需人工裁决 ({len(escalated_conflicts)} 个)\n")
-            for c in escalated_conflicts:
-                report_parts.append(
-                    f"- **文件**: `{c.get('file', '')}` (行 {c.get('lines', '')})\n"
-                    f"  - 各方立场 (辩论 {c.get('debate_rounds', 0)} 轮后未达成共识):\n"
-                )
-                for domain, pos in c.get("positions", {}).items():
-                    report_parts.append(f"    - **{domain}**: {pos}\n")
+## 📊 总览
 
-    report = "".join(report_parts)
+| 项目 | 详情 |
+|------|------|
+| PR | {state.get('pr_title', 'N/A')} |
+| 审查模式 | {mode}（{len(state.get('active_domains',[]))} Agent） |
+| 总问题 | {total}（🔴{critic} 🟠{high} 🟡{mid} 🟢{low}） |
+| 来源 | Skills Cache: {cache_count} | Agent: {agent_count} |
+| 辩论 | {debate_round} 轮 | 对抗性冲突: {len([c for c in conflicts if c.get('adversarial')])} |
+| 规范 | {skills_list or '—'} |
 
-    # ── 轻量质量校验（0 Token）──
-    all_findings_flat = security + performance + architecture
+---
+"""
+
+    # ── Linter ──
+    if linter_section:
+        report += linter_section
+
+    # ── 问题清单（按严重程度排序）──
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    sev_labels = {"critical": "🔴 Critical", "high": "🟠 High", "medium": "🟡 Medium", "low": "🟢 Low", "info": "ℹ️ Info"}
+    all_findings.sort(key=lambda x: sev_order.get(x.get("severity", "info"), 99))
+
+    current_sev = None
+    for f in all_findings:
+        sev = f.get("severity", "info")
+        if sev != current_sev:
+            current_sev = sev
+            report += f"\n---\n## {sev_labels.get(sev, sev)}\n"
+
+        source = f.get("source", "agent")
+        source_tag = {"skills_cache": "⚡Cache", "agent": "🤖Agent"}.get(source, "🤖Agent")
+        domain = f.get("domain", "?")
+        file = f.get("file", "?")
+        lines = f.get("lines", "?")
+        title = f.get("title", "未命名")
+        fix = f.get("suggestion", f.get("fix", "—"))
+        desc = f.get("description", "")[:200]
+
+        report += f"\n### {title}\n"
+        report += f"- **位置**: `{file}`:{lines} | **来源**: {source_tag} | **领域**: {domain}\n"
+        if desc:
+            report += f"- **描述**: {desc}\n"
+        report += f"- **修复**: {fix}\n"
+
+    # ── 辩论 ──
+    adversarial = [c for c in conflicts if c.get("adversarial")]
+    if adversarial:
+        report += "\n---\n## ⚔️ 辩论裁决\n"
+        resolved = [c for c in adversarial if c.get("status") == "resolved"]
+        escalated = [c for c in adversarial if c.get("status") == "escalated"]
+        if resolved:
+            report += f"### ✅ 已裁决 ({len(resolved)})\n"
+            for c in resolved[:5]:
+                report += f"- `{c.get('file','')}` — {', '.join(c.get('positions',{}).keys())[:60]}\n"
+        if escalated:
+            report += f"\n### 🔺 需人工裁决 ({len(escalated)})\n"
+            for c in escalated:
+                report += f"- `{c.get('file','')}` : 辩论 {c.get('debate_rounds',0)} 轮未共识\n"
+
+    # ── 正交 ──
+    if orthogonal_section:
+        report += orthogonal_section
+
+    # ── 质量校验 ──
     try:
         from src.tools.quality_validator import build_quality_report
-        quality = build_quality_report(all_findings_flat, state.get("pr_files", []))
+        quality = build_quality_report(all_findings, state.get("pr_files", []))
         if quality:
             report += quality
     except Exception:
         pass
 
-    # ── 结构化 Fixer Payload（给下游 Agent 用）──
-    fixer_payload = _build_fixer_payload(
-        all_findings=all_findings_flat,
-        conflicts=conflicts,
-        pr_title=state.get("pr_title", ""),
-        review_mode=mode,
-    )
+    # ── Fixer Payload ──
+    fixer_payload = _build_fixer_payload(all_findings, conflicts, state.get("pr_title", ""), mode)
 
     return {"final_report": report, "fixer_payload": fixer_payload}
 

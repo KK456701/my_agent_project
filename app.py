@@ -296,7 +296,6 @@ def main():
         # GitHub PR 模式
         report = asyncio.run(review_from_github(args.pr, no_stream=args.no_stream, commit_message=args.commit))
         console.print(Markdown(report))
-        _save_report(report, args.output, "")
         return
 
     if args.file:
