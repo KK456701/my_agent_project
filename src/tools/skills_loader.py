@@ -23,11 +23,31 @@ EXTENSION_SKILL_MAP: Dict[str, List[str]] = {
         "python_performance.md",
         "python_architecture.md",
     ],
-    ".ts": ["typescript_best_practices.md"],   # 可扩展
-    ".tsx": ["react_security.md", "react_performance.md"],  # 可扩展
-    ".js": ["javascript_security.md"],
+    ".ts": [
+        "typescript_best_practices.md",
+        "javascript_security.md",
+        "javascript_performance.md",
+    ],
+    ".tsx": [
+        "javascript_security.md",
+        "javascript_performance.md",
+        "typescript_best_practices.md",
+    ],
+    ".js": [
+        "javascript_security.md",
+        "javascript_performance.md",
+    ],
+    ".jsx": [
+        "javascript_security.md",
+        "javascript_performance.md",
+    ],
+    ".go": [
+        "go_security.md",
+        "go_performance.md",
+        "go_architecture.md",
+    ],
     ".sql": ["sql_best_practices.md"],
-    ".go": ["go_best_practices.md"],
+    ".java": ["java_security.md", "java_performance.md"],  # 可扩展
 }
 
 

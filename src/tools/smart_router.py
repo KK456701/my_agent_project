@@ -23,17 +23,24 @@ class RouteMode(str, Enum):
 # ============================================================
 
 CRITICAL_FILE_PATTERNS = [
-    # 认证 & 权限
+    # Python
     "auth", "authenticate", "authorize", "permission", "rbac", "acl",
     "login", "session", "token", "jwt", "oauth", "sso", "ldap",
-    # 加密 & 安全
     "crypto", "encrypt", "decrypt", "cipher", "hash", "signature",
     "security", "sanitize", "validator",
-    # 支付 & 敏感数据
     "payment", "billing", "invoice", "transaction", "wallet",
     "credit_card", "pii", "gdpr",
-    # 核心业务入口
     "middleware", "interceptor", "filter_chain", "pipeline",
+    # Go
+    "auth.go", "crypto.go", "token.go", "session.go", "middleware.go",
+    "security.go", "jwt.go", "oauth.go", "secret.go",
+    # JavaScript/TypeScript
+    "auth.ts", "auth.js", "AuthProvider", "useAuth", "authMiddleware",
+    "jwt.ts", "crypto.ts", "security.ts", "sanitize.ts",
+    "payment.ts", "billing.ts", "checkout.ts",
+    # Java
+    "AuthController", "SecurityConfig", "JwtUtil", "PasswordEncoder",
+    "AuthenticationFilter", "AuthorizationFilter",
 ]
 
 

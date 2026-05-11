@@ -115,6 +115,130 @@ def run_python_linter(code: str, filepath: str = "review_target.py") -> dict:
     return results
 
 
+def detect_language(files: list[str]) -> str:
+    """
+    根据文件扩展名检测主要语言
+    
+    Returns: "python" | "javascript" | "go" | "unknown"
+    """
+    for f in files:
+        ext = Path(f).suffix.lower()
+        if ext in (".py",):
+            return "python"
+        if ext in (".js", ".jsx", ".ts", ".tsx"):
+            return "javascript"
+        if ext in (".go",):
+            return "go"
+    return "unknown"
+
+
+def run_multi_linter(code: str, files: list[str], filepath: str = "review_target") -> dict:
+    """
+    根据代码语言自动选择 Linter
+    
+    Args:
+        code: 代码文本
+        files: 文件路径列表（用于判断语言）
+        filepath: 虚拟文件名
+    
+    Returns:
+        和 run_python_linter 相同格式的结果字典
+    """
+    lang = detect_language(files)
+
+    if lang == "python":
+        return run_python_linter(code, f"{filepath}.py")
+    elif lang == "javascript":
+        return run_js_linter(code, f"{filepath}.js")
+    elif lang == "go":
+        return run_go_linter(code, f"{filepath}.go")
+
+    return {"ruff": [], "bandit": [], "errors": [f"不支持的语言: {lang}"]}
+
+
+def run_js_linter(code: str, filepath: str = "review_target.js") -> dict:
+    """
+    对 JavaScript/TypeScript 代码运行 ESLint 静态分析
+    
+    ⚠️ 需要: npm install -g eslint (跳过不影响主流程)
+    """
+    results = {"ruff": [], "bandit": [], "errors": []}
+
+    eslint_path = _find_executable("eslint")
+    if not eslint_path:
+        results["errors"].append("ESLint 未安装（npm install -g eslint）")
+        return results
+
+    try:
+        # 写临时文件
+        tmp_file = Path(filepath)
+        tmp_file.write_text(code, encoding="utf-8")
+
+        proc = subprocess.run(
+            [eslint_path, "--format", "json", str(tmp_file)],
+            capture_output=True, encoding="utf-8", timeout=30,
+        )
+        tmp_file.unlink(missing_ok=True)
+
+        if proc.stdout.strip():
+            try:
+                eslint_output = json.loads(proc.stdout)
+                for file_result in eslint_output:
+                    for msg in file_result.get("messages", []):
+                        sev = "medium" if msg.get("severity") == 2 else "low"
+                        results["ruff"].append({
+                            "line": msg.get("line", "?"),
+                            "message": msg.get("message", ""),
+                            "rule": msg.get("ruleId", "eslint"),
+                        })
+            except json.JSONDecodeError:
+                pass
+    except Exception as e:
+        results["errors"].append(f"ESLint failed: {e}")
+
+    return results
+
+
+def run_go_linter(code: str, filepath: str = "review_target.go") -> dict:
+    """
+    对 Go 代码运行 golangci-lint 静态分析
+    
+    ⚠️ 需要: go install golangci-lint (跳过不影响主流程)
+    """
+    results = {"ruff": [], "bandit": [], "errors": []}
+
+    golangci_path = _find_executable("golangci-lint")
+    if not golangci_path:
+        results["errors"].append("golangci-lint 未安装（go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest）")
+        return results
+
+    try:
+        tmp_file = Path(filepath)
+        tmp_file.write_text(code, encoding="utf-8")
+
+        proc = subprocess.run(
+            [golangci_path, "run", "--out-format", "json", str(tmp_file)],
+            capture_output=True, encoding="utf-8", timeout=30,
+        )
+        tmp_file.unlink(missing_ok=True)
+
+        if proc.stdout.strip():
+            try:
+                issues = json.loads(proc.stdout).get("Issues", [])
+                for iss in issues:
+                    results["ruff"].append({
+                        "line": iss.get("Pos", {}).get("Line", "?"),
+                        "message": iss.get("Text", ""),
+                        "rule": iss.get("FromLinter", "golangci"),
+                    })
+            except json.JSONDecodeError:
+                pass
+    except Exception as e:
+        results["errors"].append(f"golangci-lint failed: {e}")
+
+    return results
+
+
 def linter_results_to_prompt(linter_results: dict) -> str:
     """
     将 Linter 结果格式化为可注入 Agent prompt 的文本

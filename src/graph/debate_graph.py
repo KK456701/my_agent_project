@@ -142,8 +142,8 @@ async def review_node(state: DebateState) -> dict:
 
     if domain == "security":  # 只跑一次
         try:
-            from src.tools.linter_runner import run_python_linter, linter_results_to_prompt
-            linter_results = run_python_linter(code)
+            from src.tools.linter_runner import run_multi_linter, linter_results_to_prompt
+            linter_results = run_multi_linter(code, files)
             linter_prompt = linter_results_to_prompt(linter_results)
         except Exception:
             pass
@@ -375,7 +375,7 @@ def generate_report(state: DebateState) -> dict:
 
     # ── Linter 静态分析（非 LLM，秒出结果）──
     try:
-        from src.tools.linter_runner import run_python_linter, linter_results_to_prompt
+        from src.tools.linter_runner import run_multi_linter, linter_results_to_prompt
         diff = state.get("pr_diff", "")
         code_lines = []
         for line in diff.split("\n"):
@@ -384,7 +384,7 @@ def generate_report(state: DebateState) -> dict:
             elif not line.startswith("-") and not line.startswith("---") and not line.startswith("diff ") and not line.startswith("@@"):
                 code_lines.append(line)
         code = "\n".join(code_lines)
-        lr = run_python_linter(code)
+        lr = run_multi_linter(code, state.get("pr_files", []))
         lp = linter_results_to_prompt(lr)
         if lp:
             report_parts.append(lp)
