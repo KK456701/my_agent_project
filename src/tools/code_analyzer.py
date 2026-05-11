@@ -1,6 +1,7 @@
 """
 代码分析工具 — PR diff 预处理和结构化分析
 """
+import re
 from typing import List, Tuple
 
 
@@ -145,19 +146,21 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
     """
     冲突检测：找出不同 Agent 对同一代码区域的不同判断
     
-    简单策略：
-    - 同一文件 + 行号范围有重叠 → 可能冲突
-    - 进一步检查：如果两个 Agent 的 severity 都是 high/critical → 可能是权衡冲突
+    两阶段：
+    1. 行号重叠 → 候选冲突（necessary but not sufficient）
+    2. 语义过滤 → 只保留真正的 engineering trade-off
     
-    Args:
-        findings_by_domain: {
-            "security": [finding, ...],
-            "performance": [finding, ...],
-            "architecture": [finding, ...],
-        }
+    什么叫「真正的冲突」？
+    - 不是碰巧同一行但讨论完全不同的问题（Security:SQL注入 vs Architecture:模块耦合）
+    - 而是对同一行有需要权衡的对立观点（Security:必须参数化 vs Performance:参数化会慢）
     
-    Returns:
-        冲突列表
+    判定规则（不调 LLM）：
+    A. 修复建议是否矛盾 → 真冲突（如"必须参数化" vs "不需要参数化"）
+    B. Security+Performance 同时给 high/critical 且同一行 → 可能是 trade-off
+    C. Severity 差距 ≥ 2 级 → 可能一方严重低估
+    D. 讨论的关键词有交集 → 可能相关（都在讨论"查询"），否则正交过滤
+    
+    不需要 Agent 来判断——Consensus Agent 在裁决时会再次验证是否真正对立。
     """
     all_findings: List[Tuple[str, dict]] = []
     for domain, findings in findings_by_domain.items():
@@ -174,33 +177,116 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
             if domain_a == domain_b:
                 continue
 
-            # 判断行号范围是否有重叠
+            # 阶段 1：行号重叠检查
             la_start, la_end = _parse_line_range(fa.get("lines", "0-0"))
             lb_start, lb_end = _parse_line_range(fb.get("lines", "0-0"))
 
-            if la_start >= 0 and lb_start >= 0:
-                overlap = max(0, min(la_end, lb_end) - max(la_start, lb_start))
-                if overlap > 0 or (fa.get("file") == fb.get("file") and abs(la_start - lb_start) <= 5):
-                    conflict_id += 1
-                    conflicts.append({
-                        "conflict_id": f"conflict_{conflict_id}",
-                        "file": fa.get("file", ""),
-                        "lines": f"{min(la_start, lb_start)}-{max(la_end, lb_end)}",
-                        "code_snippet": fa.get("code_snippet", ""),
-                        "positions": {
-                            domain_a: fa.get("description", ""),
-                            domain_b: fb.get("description", ""),
-                        },
-                        "finding_ids": {
-                            domain_a: i,
-                            domain_b: j,
-                        },
-                        "status": "pending",
-                        "debate_rounds": 0,
-                        "resolution": "",
-                    })
+            if not (la_start >= 0 and lb_start >= 0):
+                continue
+
+            overlap = max(0, min(la_end, lb_end) - max(la_start, lb_start))
+            same_file = fa.get("file") == fb.get("file")
+            lines_close = abs(la_start - lb_start) <= 5
+
+            if not (overlap > 0 or (same_file and lines_close)):
+                continue
+
+            # 阶段 2：语义过滤 — 是否真正对立？
+            if not _is_meaningful_conflict(fa, fb, domain_a, domain_b):
+                continue
+
+            conflict_id += 1
+            conflicts.append({
+                "conflict_id": f"conflict_{conflict_id}",
+                "file": fa.get("file", ""),
+                "lines": f"{min(la_start, lb_start)}-{max(la_end, lb_end)}",
+                "code_snippet": fa.get("code_snippet", ""),
+                "positions": {
+                    domain_a: fa.get("description", ""),
+                    domain_b: fb.get("description", ""),
+                },
+                "status": "pending",
+                "debate_rounds": 0,
+                "resolution": "",
+            })
 
     return conflicts
+
+
+def _is_meaningful_conflict(
+    fa: dict, fb: dict, domain_a: str, domain_b: str
+) -> bool:
+    """
+    判断两个行号重叠的 finding 是否构成「真正的 engineering trade-off」
+    而非碰巧同一行但讨论完全无关的问题。
+    
+    不需要 LLM — 纯规则判断。
+    """
+
+    # 规则 A：修复建议矛盾检查
+    # 两个 finding 的 suggestion 是否互斥？
+    suggestion_a = (fa.get("suggestion", "") + fa.get("fix", "")).lower()
+    suggestion_b = (fb.get("suggestion", "") + fb.get("fix", "")).lower()
+
+    # 矛盾模式：一个说"必须参数化/加密"，另一个说"不需要/移除"
+    contradictory_pairs = [
+        (["参数化", "prepared", "placeholder"], ["不参数化", "直接拼接", "speed", "慢"]),
+        (["加密", "encrypt", "bcrypt", "argon2"], ["明文", "不加密", "plaintext"]),
+        (["线程安全", "lock", "mutex", "并发安全"], ["全局", "去掉锁", "单线程"]),
+    ]
+    for affirm_words, deny_words in contradictory_pairs:
+        a_affirms = any(w in suggestion_a for w in affirm_words)
+        b_denies = any(w in suggestion_b for w in deny_words)
+        if a_affirms and b_denies:
+            return True
+        # 反过来：B 肯定，A 否定
+        b_affirms = any(w in suggestion_b for w in affirm_words)
+        a_denies = any(w in suggestion_a for w in deny_words)
+        if b_affirms and a_denies:
+            return True
+
+    # 规则 B：Security + Performance 同时报 high/critical 且同文件同行
+    # → 很可能是 「安全 vs 效率」 的 trade-off
+    high_domains = {"security", "performance"}
+    if {domain_a, domain_b} == high_domains:
+        sev_a = fa.get("severity", "").lower()
+        sev_b = fb.get("severity", "").lower()
+        if sev_a in ("critical", "high") and sev_b in ("critical", "high"):
+            return True
+
+    # 规则 C：Severity 差距 ≥ 2 级 → 一方可能严重误判
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    rank_a = sev_order.get(fa.get("severity", "info").lower(), 4)
+    rank_b = sev_order.get(fb.get("severity", "info").lower(), 4)
+    if abs(rank_a - rank_b) >= 2:
+        return True
+
+    # 规则 D：关键词交集 → 讨论的是相关话题吗？
+    # 提取 finding 标题中的关键词
+    title_a = set(_extract_keywords(fa.get("title", "")))
+    title_b = set(_extract_keywords(fb.get("title", "")))
+    if len(title_a) > 0 and len(title_b) > 0:
+        overlap_keywords = title_a & title_b
+        if len(overlap_keywords) >= 2:
+            return True  # 关键词重叠 → 可能相关
+        if len(overlap_keywords) == 0:
+            return False  # 0 重叠 → 正交问题，过滤
+
+    # 默认：同一行号 + 有至少 1 个共同关键词 → 保留
+    return True
+
+
+def _extract_keywords(text: str) -> List[str]:
+    """从文本中提取关键词（中文按字符，英文按单词）"""
+    words = set()
+    # 英文单词
+    for w in re.findall(r'\b([a-zA-Z]{3,})\b', text.lower()):
+        words.add(w)
+    # 中文双字词
+    chinese = re.findall(r'[\u4e00-\u9fff]{2,}', text)
+    for c in chinese:
+        words.add(c)
+    return list(words)
 
 
 def _parse_line_range(lines_str: str) -> Tuple[int, int]:
