@@ -43,8 +43,8 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
               ↓                 ↓                 ↓
          ┌─────────┐    ┌───────────────┐    ┌──────────────────┐
          │  Linter │    │ Skills Cache  │    │  Memory (召回)    │
-         │ Ruff    │    │ 确定性匹配引擎 │    │ 扫25个.md→签名表  │
-         │ Bandit  │    │ 命中→跳过LLM  │    │ 关键词交集→Top-5  │
+         │ 多语言  │    │ 确定性匹配引擎 │    │ 扫所有.md→签名表  │
+         │ Ruff等  │    │ 命中→跳过LLM  │    │ 关键词交集→Top-5  │
          └────┬────┘    └──────┬────────┘    └────────┬─────────┘
               │   < 1s, 非 LLM  │ < 1ms, 0 Token   ↑               │
               │                │  人确认过的模式    │               │
@@ -65,34 +65,31 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
         │   LangGraph Send API 并行（3 次独立 LLM 调用）│       │
         └──────────────────┼──────────────────┘           │
                            ↓                              │
-                   ┌───────────────┐                       │
-                   │  冲突检测      │                       │
-                   │  行号重叠 →    │                       │
-                   │  同一代码区域  │                       │
-                   └───────┬───────┘
-                           ↓
-              ┌──── 有冲突? ──── 否 ──────────┐
-              ↓ 是                            │
-       ┌──────────────┐                       │
-       │  辩论循环     │                       │
-       │  Consensus    │                       │
-       │  35 conflicts │                       │
-       │  asyncio      │                       │
-       │  .gather 并发 │                       │
-       └──────┬───────┘                       │
-              ↓                               │
-    ┌── 共识? ── 是 ──────────────────────────┘
-    ↓ 否
+                   ┌──────────────────┐                    │
+                   │  冲突分类         │                    │
+                   │  对抗性 vs 正交   │                    │
+                   │  只对抗才辩论     │                    │
+                   └───────┬──────────┘                    │
+                           ↓                               │
+         ┌──── 对抗性冲突? ──── 否 ──→ 正交标注 →─────────┐
+         ↓ 是                                             │
+  ┌──────────────┐                                        │
+  │  辩论循环     │                                        │
+  │  Consensus    │                                        │
+  │  asyncio      │                                        │
+  │  .gather 并发 │                                        │
+  └──────┬───────┘                                        │
+         ↓                                                │
+   ┌── 共识? ── 是 ──────────────────────────────────────┘
+   ↓ 否
 ┌──────────┐
 │  升级人工 │
-│  max 3轮  │
 └────┬─────┘
-     │
      └────────────────────────────────────────┐
                                               ↓
                                     ┌──────────────────┐
                                     │  generate_report  │
-                                    │  纯 Python 0 Token│
+                                    │  + 质量校验 (0 TK)│
                                     └────────┬─────────┘
                                              │
                           ┌──────────────────┼──────────────────┐
@@ -143,23 +140,18 @@ Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
 ### 数据流总结
 
 ```
-PR 代码 ──→ 三层过滤 ──→ 智能路由 ──→ 3 Agent 并行审查 ──→ 冲突辩论 ──→ 双格式输出
-              (Linter+Skills    (1/2/3个   (各一次LLM调用,    (Consensus   (Markdown+JSON)
-               Cache+Memory,     Agent)     互不对话)          裁决)
+PR 代码 ──→ 三层过滤 ──→ 智能路由 ──→ 3 Agent 并行审查 ──→ 冲突分类(对抗/正交) ──→ 双格式输出
+              (Linter+Skills    (1/2/3个   (各一次LLM调用,    (对抗→辩论裁决      (Markdown+JSON
+               Cache+Memory,     Agent)     互不对话)           正交→标注直出)     + 质量校验)
                <1s, 0 Token)
 
-三层过滤递进:
-  ① Linter (语法模式, < 1s)       → Ruff/Bandit → 17 个问题（0 Token）
-  ② Skills Cache (逻辑模式, <1ms) → 正则匹配 YAML 规则 → 跳过 LLM（0 Token）
-  ③ Agent (推理兜底)              → LLM 审查前两层覆盖不了的问题
-
 Token 消耗分布:
-  Linter / Cache / Memory:  0 token（纯 Python/子进程/正则）
-  3 Agent 审查:              ~22K input tokens（并行，等最慢）
-  辩论裁决:                  ~2K/次 × 并发
-  报告生成:                  0 token（纯字符串拼接）
+  ① Linter / Cache / Memory:  0 token（纯 Python/子进程/正则）
+  ② 3 Agent 审查:              约 22K input tokens（并行，等最慢）
+  ③ 辩论裁决:                   仅在对抗性冲突时触发，约 2K/次 × 并发
+  ④ 报告 + 质量校验:            0 token（纯字符串拼接）
   ─────────────────────────
-  总计:           ~25K tokens（128K 窗口绰绰有余）
+  总计:          约 25K tokens
 ```
 
 ---
@@ -235,15 +227,18 @@ my-Agentproject/
 │       ├── smart_router.py    # 三维度智能路由
 │       ├── review_memory.py   # Markdown 审查记忆（召回 + 归档）
 │       ├── skills_loader.py   # Skills 体系（按文件类型加载）
-│       ├── linter_runner.py   # Ruff + Bandit 静态分析
+│       ├── linter_runner.py   # Ruff + Bandit (多语言)
 │       ├── pattern_matcher.py  # Skills Cache 确定性匹配引擎
+│       ├── quality_validator.py # 0 Token 质量校验（语法/路径/敏感信息/一致性）
 │       └── github_tool.py     # GitHub API 封装
 │
 ├── prompts/                   # Agent System Prompt
 │   ├── security.md / performance.md / architecture.md / consensus.md
 │
-├── skills/                    # 团队编码规范（Markdown）
+├── skills/                    # 多语言团队编码规范（Python/Go/JS/TS）
 │   ├── python_security.md / python_performance.md / python_architecture.md
+│   ├── go_security.md / go_performance.md / go_architecture.md
+│   └── javascript_security.md / javascript_performance.md / typescript_best_practices.md
 │
 ├── memory/                    # 审查记忆库（Markdown，自动积累）
 │   ├── patterns/              # 问题模式（如 sql_injection.md）
@@ -327,6 +322,9 @@ Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemat
 
 **Q: Skills Cache、Linter、Memory 三者有什么区别？**
 > Linter（外部程序，预定义规则）只给"可疑"标记；Skills Cache（内部 YAML 规则，人确认过的）命中直接出修复方案并跳过 LLM；Memory（机器自动积累）有误召回风险，注入 prompt 让 Agent 二次确认。递进关系：Linter 查语法 → Cache 查确定模式 → Agent 查剩下的。
+
+**Q: 冲突多了会不会浪费 Token？**
+> 不会。冲突检测分两类：对抗性冲突（修复建议互斥，触发辩论）和正交发现（不同角度互补，直出报告标注 "🔗 交叉发现"）。只有真正的 trade-off 才走 Consensus 裁决。
 
 **Q: Linter 是 LangChain Tool 吗？**
 > 当前是 Pre-processing 模式——审查前秒出结果、拼进 prompt，比 Tool Calling 更高效。确定性操作不需要 Agent 花 round-trip 去"决定"调不调。升级路径已预留。
