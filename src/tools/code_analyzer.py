@@ -2,7 +2,7 @@
 代码分析工具 — PR diff 预处理和结构化分析
 """
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
 def parse_diff_to_files(diff_text: str) -> List[str]:
@@ -175,6 +175,11 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
                 adv = True
             elif has_line:
                 adv = False
+            elif same_f:
+                # 行号不重叠 + 硬编码未命中 → 语义精排兜底（全局冲突检测）
+                adv = _global_semantic_check(fa, fb)
+                if adv is None:
+                    continue
             else:
                 continue
 
@@ -329,6 +334,22 @@ def _check_suggestion_contradiction(fa: dict, fb: dict) -> bool:
             return True
 
     return False
+
+
+def _global_semantic_check(fa: dict, fb: dict) -> Optional[bool]:
+    fix_a = fa.get('suggestion', fa.get('fix', ''))
+    fix_b = fb.get('suggestion', fb.get('fix', ''))
+    if not fix_a or not fix_b:
+        return None
+    ta = set(_extract_keywords(fa.get('title', '')))
+    tb = set(_extract_keywords(fb.get('title', '')))
+    if ta and tb and not (ta & tb):
+        return None
+    try:
+        from src.tools.semantic_reranker import are_suggestions_contradictory
+        return are_suggestions_contradictory(fix_a[:300], fix_b[:300])
+    except Exception:
+        return None
 
 
 def _parse_line_range(lines_str: str) -> Tuple[int, int]:
