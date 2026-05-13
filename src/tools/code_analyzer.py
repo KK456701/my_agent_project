@@ -261,9 +261,23 @@ def _is_meaningful_conflict(
     if len(title_a) > 0 and len(title_b) > 0:
         overlap_keywords = title_a & title_b
         if len(overlap_keywords) >= 2:
-            return True  # 关键词重叠 → 可能相关
+            return True
         if len(overlap_keywords) == 0:
-            return False  # 0 重叠 → 正交问题，过滤
+            return False
+
+    # 规则 E：语义精排（RAG Rerank — embedding 相似度）
+    fix_a = fa.get("suggestion", fa.get("fix", ""))
+    fix_b = fb.get("suggestion", fb.get("fix", ""))
+    if fix_a and fix_b:
+        try:
+            from src.tools.semantic_reranker import are_suggestions_contradictory
+            result = are_suggestions_contradictory(fix_a[:300], fix_b[:300])
+            if result is True:
+                return True
+            if result is False:
+                return False
+        except Exception:
+            pass
 
     # 默认：同一行号 + 有至少 1 个共同关键词 → 保留
     return True

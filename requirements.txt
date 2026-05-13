@@ -26,6 +26,8 @@ rich>=13.0.0            # 终端美化输出
 # --- 代码分析 ---
 # (核心分析由 LLM 完成，不依赖 AST 解析工具)
 
-# --- 开发工具 ---
-pytest>=8.0.0
-pytest-asyncio>=0.24.0
+# --- 推荐工具（可选，增强功能） ---
+# Ruff + Bandit — Python Linter
+# ESList — JS/TS Linter
+# golangci-lint — Go Linter
+# sentence-transformers + modelscope — 语义精排（本地 embedding）

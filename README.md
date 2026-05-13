@@ -223,6 +223,7 @@ my-Agentproject/
 │       ├── skills_loader.py   # Skills 体系（按文件类型加载）
 │       ├── linter_runner.py   # Ruff + Bandit (多语言)
 │       ├── pattern_matcher.py  # Skills Cache 确定性匹配引擎
+│       ├── semantic_reranker.py # 语义精排（RAG Rerank）— 可选
 │       ├── quality_validator.py # 0 Token 质量校验（语法/路径/敏感信息/一致性）
 │       └── github_tool.py     # GitHub API 封装
 │
@@ -319,6 +320,9 @@ Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemat
 
 **Q: 冲突多了会不会浪费 Token？**
 > 不会。冲突检测分两类：对抗性冲突（修复建议互斥，触发辩论）和正交发现（不同角度互补，直出报告标注 "🔗 交叉发现"）。只有真正的 trade-off 才走 Consensus 裁决。
+
+**Q: 冲突怎么判断是不是真正的对抗？**
+> 两阶段：规则粗筛（行号重叠 + 关键词交集 + 硬编码互斥词对）+ 语义精排（embedding 模型算建议相似度）。借鉴 RAG Rerank 思路——高相似度=同义→正交；低相似度=分歧→对抗。embedding 模型从 ModelScope 下载，本地 CPU，0 Token。
 
 **Q: Linter 是 LangChain Tool 吗？**
 > 当前是 Pre-processing 模式——审查前秒出结果、拼进 prompt，比 Tool Calling 更高效。确定性操作不需要 Agent 花 round-trip 去"决定"调不调。升级路径已预留。
