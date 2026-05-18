@@ -143,7 +143,18 @@ def extract_code_snippet(diff_text: str, file_path: str, line_start: int, line_e
 
 
 def detect_conflicts(findings_by_domain: dict) -> List[dict]:
-    """只返回需要辩论的对抗性冲突，正交发现不上报"""
+    """
+    检测需要辩论的对抗性冲突，正交发现不上报。
+    
+    新流程（4步递进）：
+      Step 1: 同一问题？（描述语义相似度 > 0.85）
+      Step 1.5: 同一问题 → 修复互斥？→ 对抗 / 正交
+      Step 2: 不同问题 → 修复互斥？（跨行语义冲突）→ 对抗
+      Step 3: 行号重叠 → _is_meaningful_conflict_v2 规则判断
+      Step 4: 同文件不同行 → _global_semantic_check 兜底
+    
+    核心原则：修复互斥是主判据，位置/语义是辅助信号。
+    """
     all_findings = []
     for domain, findings in findings_by_domain.items():
         for f in findings:
@@ -161,26 +172,51 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
             if (min(i, j), max(i, j)) in seen:
                 continue
 
+            # 不同文件 → 跳过
+            if fa.get("file") != fb.get("file"):
+                continue
+
+            # ── 计算位置关系 ──
             la_s, la_e = _parse_line_range(fa.get("lines", "0-0"))
             lb_s, lb_e = _parse_line_range(fb.get("lines", "0-0"))
             lap = max(0, min(la_e, lb_e) - max(la_s, lb_s))
-            same_f = fa.get("file") == fb.get("file")
             close = abs(la_s - lb_s) <= 5 if la_s >= 0 and lb_s >= 0 else False
-            has_line = lap > 0 or (same_f and close)
-            has_contra = _check_suggestion_contradiction(fa, fb)
+            has_line = lap > 0 or close
 
-            if has_contra:
+            # ── 并行计算三个信号 ──
+            is_contra = _check_contradiction_v2(fa, fb)  # True/False/None
+            same_issue = _check_same_issue(fa, fb)        # True/False
+
+            # ── 融合判定矩阵 ──
+            adv = None  # None = 跳过此对
+
+            if is_contra is True:
+                # 修复建议互斥 → 对抗（无论位置/语义）
                 adv = True
-            elif has_line and _is_meaningful_conflict(fa, fb, da, db):
-                adv = True
-            elif has_line:
-                adv = False
-            elif same_f:
-                # 行号不重叠 + 硬编码未命中 → 语义精排兜底（全局冲突检测）
-                adv = _global_semantic_check(fa, fb)
-                if adv is None:
-                    continue
-            else:
+            elif is_contra is False:
+                # 修复建议不互斥
+                if same_issue and has_line:
+                    adv = False  # 同一问题 + 同一位置 + 修复兼容 → 正交
+                else:
+                    continue   # 不同问题或无位置重叠 → 跳过
+            else:  # is_contra is None（灰色地带）
+                if same_issue:
+                    if has_line:
+                        adv = False  # 同一问题 + 同一位置 → 保守：正交
+                    else:
+                        adv = True   # 同一问题 + 不同位置 → 跨行冲突
+                elif has_line:
+                    # 不同问题 + 行号重叠 → 规则兜底
+                    adv = _is_meaningful_conflict_v2(fa, fb, da, db)
+                    if adv is False:
+                        adv = None  # 规则判无关 → 跳过
+                else:
+                    # 不同问题 + 不同位置 → 全局语义兜底
+                    adv = _global_semantic_check(fa, fb)
+                    if adv is None:
+                        continue
+
+            if adv is None:
                 continue
 
             seen.add((min(i, j), max(i, j)))
@@ -211,66 +247,136 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
 detect_conflicts._last_orthogonal = []
 
 
-def _is_meaningful_conflict(
+def _check_same_issue(fa: dict, fb: dict) -> bool:
+    """
+    Step 1: 判断两个 finding 是否在说同一问题（描述语义相似度 > 0.85）
+    
+    利用 Semantic Reranker 的 embedding 模型计算描述文本的余弦相似度。
+    模型不可用时返回 False（保守：认为不同问题，走后续规则判断）。
+    """
+    desc_a = fa.get("description", "")
+    desc_b = fb.get("description", "")
+    if not desc_a or not desc_b:
+        return False
+    try:
+        from src.tools.semantic_reranker import compute_similarity
+        sim = compute_similarity(desc_a[:500], desc_b[:500])
+        return sim is not None and sim > 0.85
+    except Exception:
+        return False
+
+
+def _check_contradiction_v2(fa: dict, fb: dict) -> Optional[bool]:
+    """
+    规则优先 + 语义兜底：判断两个 finding 的修复建议是否互斥。
+    
+    Returns:
+        True  = 修复建议互斥（矛盾）
+        False = 修复建议兼容（方向一致）
+        None  = 灰色地带（无法判断）
+    
+    两层架构（规则先跑！）：
+      Layer 1: 硬编码规则（快速、可靠，0 Token）
+        捕获 embedding 分不出的同主题矛盾（如"删除缓存"vs"保留缓存+TTL"→0.999）
+      Layer 2: Semantic Reranker 兜底（规则未命中时）
+        sim > 0.7 → False   sim < 0.3 → True   灰色 → None
+    """
+    fix_a = (fa.get("suggestion", "") + " " + fa.get("fix", "")).strip()
+    fix_b = (fb.get("suggestion", "") + " " + fb.get("fix", "")).strip()
+
+    if not fix_a or not fix_b:
+        return None
+
+    fix_a_lower = fix_a.lower()
+    fix_b_lower = fix_b.lower()
+
+    # ── Layer 1: 硬编码规则（必须在前，阻止 semantic 误判）──
+    # embedding 按主题算相似度，"删除缓存"和"加TTL缓存"都含"缓存"→0.999
+    # 规则补这个盲区：规则先命中就返回，不再走 semantic
+
+    exclusive_pairs = [
+        (["bcrypt", "argon2", "scrypt", "pbkdf2"], ["md5", "sha1", "sha256", "sha-256"]),
+        (["参数化", "prepared", "placeholder", "bind"], ["拼接", "f-string", "sprintf", "concatenat"]),
+        (["加密", "encrypt", "aes", "cipher"], ["明文", "plaintext", "不加密"]),
+        (["异步", "async", "asyncio", "await"], ["同步", "sync", "阻塞", "blocking"]),
+        (["缓存", "cache"], ["不要缓存", "移除缓存", "不缓存"]),
+        (["删除", "移除", "remove", "不要"], ["保留缓存", "添加缓存", "加缓存", "ttl", "过期"]),
+    ]
+
+    for affirm_terms, deny_terms in exclusive_pairs:
+        a_affirms = any(t in fix_a_lower for t in affirm_terms)
+        b_affirms = any(t in fix_b_lower for t in affirm_terms)
+        a_denies = any(t in fix_a_lower for t in deny_terms)
+        b_denies = any(t in fix_b_lower for t in deny_terms)
+
+        if (a_affirms and b_denies) or (b_affirms and a_denies):
+            return True
+
+    # 特殊：删除+缓存 vs 保留/改进+缓存（跨词对组合判断）
+    delete_words = ["删除", "移除", "remove", "不要", "禁用"]
+    keep_words = ["ttl", "过期", "lru", "redis", "保留", "添加", "cachetools"]
+    cache_words = ["cache", "缓存", "token_cache", "_cache"]
+
+    a_has_cache = any(w in fix_a_lower for w in cache_words)
+    b_has_cache = any(w in fix_b_lower for w in cache_words)
+
+    if a_has_cache and b_has_cache:
+        a_del = any(w in fix_a_lower for w in delete_words)
+        b_keep = any(w in fix_b_lower for w in keep_words)
+        if a_del and b_keep:
+            return True
+        b_del = any(w in fix_b_lower for w in delete_words)
+        a_keep = any(w in fix_a_lower for w in keep_words)
+        if b_del and a_keep:
+            return True
+
+    # ── Layer 2: Semantic Reranker 兜底 ──
+    try:
+        from src.tools.semantic_reranker import are_suggestions_contradictory
+        result = are_suggestions_contradictory(fix_a[:300], fix_b[:300])
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_meaningful_conflict_v2(
     fa: dict, fb: dict, domain_a: str, domain_b: str
 ) -> bool:
     """
-    判断两个行号重叠的 finding 是否构成「真正的 engineering trade-off」
-    而非碰巧同一行但讨论完全无关的问题。
+    行号重叠 + 不同问题 + 修复灰色地带 → 判断是否构成有意义的冲突。
     
-    不需要 LLM — 纯规则判断。
+    修复点：
+    - 去掉盲判规则（原规则B sec+perf都high直接判对抗）
+    - 默认值改为 False（保守，不过度送辩论）
     """
 
-    # 规则 A：修复建议矛盾检查
-    # 两个 finding 的 suggestion 是否互斥？
-    suggestion_a = (fa.get("suggestion", "") + fa.get("fix", "")).lower()
-    suggestion_b = (fb.get("suggestion", "") + fb.get("fix", "")).lower()
-
-    # 矛盾模式：一个说"必须参数化/加密"，另一个说"不需要/移除"
-    contradictory_pairs = [
-        (["参数化", "prepared", "placeholder"], ["不参数化", "直接拼接", "speed", "慢"]),
-        (["加密", "encrypt", "bcrypt", "argon2"], ["明文", "不加密", "plaintext"]),
-        (["线程安全", "lock", "mutex", "并发安全"], ["全局", "去掉锁", "单线程"]),
-    ]
-    for affirm_words, deny_words in contradictory_pairs:
-        a_affirms = any(w in suggestion_a for w in affirm_words)
-        b_denies = any(w in suggestion_b for w in deny_words)
-        if a_affirms and b_denies:
-            return True
-        # 反过来：B 肯定，A 否定
-        b_affirms = any(w in suggestion_b for w in affirm_words)
-        a_denies = any(w in suggestion_a for w in deny_words)
-        if b_affirms and a_denies:
-            return True
-
-    # 规则 B：Security + Performance 同时报 high/critical 且同文件同行
-    # → 很可能是 「安全 vs 效率」 的 trade-off
-    high_domains = {"security", "performance"}
-    if {domain_a, domain_b} == high_domains:
-        sev_a = fa.get("severity", "").lower()
-        sev_b = fb.get("severity", "").lower()
-        if sev_a in ("critical", "high") and sev_b in ("critical", "high"):
-            return True
-
-    # 规则 C：Severity 差距 ≥ 2 级 → 一方可能严重误判
+    # 规则 1: severity 差距 ≥ 2 级 → 一方可能严重误判
     sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     rank_a = sev_order.get(fa.get("severity", "info").lower(), 4)
     rank_b = sev_order.get(fb.get("severity", "info").lower(), 4)
     if abs(rank_a - rank_b) >= 2:
         return True
 
-    # 规则 D：关键词交集 → 讨论的是相关话题吗？
-    # 提取 finding 标题中的关键词
+    # 规则 2: 标题关键词交集
     title_a = set(_extract_keywords(fa.get("title", "")))
     title_b = set(_extract_keywords(fb.get("title", "")))
-    if len(title_a) > 0 and len(title_b) > 0:
-        overlap_keywords = title_a & title_b
-        if len(overlap_keywords) >= 2:
-            return True
-        if len(overlap_keywords) == 0:
-            return False
+    overlap = title_a & title_b
 
-    # 规则 E：语义精排（RAG Rerank — embedding 相似度）
+    if len(overlap) == 0:
+        return False  # 完全无关话题
+
+    # 规则 3: security + performance 都 high/critical + 关键词交集 ≥ 2
+    # （加了交集约束，不再盲判）
+    if {domain_a, domain_b} == {"security", "performance"}:
+        sev_a = fa.get("severity", "").lower()
+        sev_b = fb.get("severity", "").lower()
+        if sev_a in ("critical", "high") and sev_b in ("critical", "high") and len(overlap) >= 2:
+            return True
+
+    # 规则 4: semantic reranker 兜底
     fix_a = fa.get("suggestion", fa.get("fix", ""))
     fix_b = fb.get("suggestion", fb.get("fix", ""))
     if fix_a and fix_b:
@@ -284,8 +390,8 @@ def _is_meaningful_conflict(
         except Exception:
             pass
 
-    # 默认：同一行号 + 有至少 1 个共同关键词 → 保留
-    return True
+    # 默认：保守 → 不送辩论
+    return False
 
 
 def _extract_keywords(text: str) -> List[str]:
@@ -299,41 +405,6 @@ def _extract_keywords(text: str) -> List[str]:
     for c in chinese:
         words.add(c)
     return list(words)
-
-
-def _check_suggestion_contradiction(fa: dict, fb: dict) -> bool:
-    """
-    检查两个 finding 的修复建议是否互斥（跨行语义冲突）
-    
-    不看行号，只看修复建议是否互相矛盾。
-    
-    例: Security 说"用 bcrypt" vs Performance 说"用 SHA256"
-        → 密码哈希维度上互斥 → True
-    """
-    fix_a = (fa.get("suggestion", "") + " " + fa.get("fix", "")).lower()
-    fix_b = (fb.get("suggestion", "") + " " + fb.get("fix", "")).lower()
-
-    exclusive_pairs = [
-        (["bcrypt", "argon2", "scrypt"], ["sha256", "sha-256", "md5", "sha1"]),
-        (["加密", "encrypt", "aes", "cipher"], ["明文", "plaintext", "不加密"]),
-        (["参数化", "parameterized", "placeholder"], ["拼接", "concatenat", "f-string", "sprintf"]),
-        (["缓存", "cache", "redis", "lru", "cached"], ["不缓存", "不要缓存", "remove cache"]),
-        (["异步", "async", "asyncio", "await"], ["同步", "sync", "阻塞", "blocking"]),
-        (["拆分", "abstract", "解耦", "extract"], ["内联", "inline", "合并", "不要拆分"]),
-    ]
-
-    for affirm_terms, deny_terms in exclusive_pairs:
-        a_affirms = any(t in fix_a for t in affirm_terms)
-        b_affirms = any(t in fix_b for t in affirm_terms)
-        a_denies = any(t in fix_a for t in deny_terms)
-        b_denies = any(t in fix_b for t in deny_terms)
-
-        if a_affirms and b_denies:
-            return True
-        if b_affirms and a_denies:
-            return True
-
-    return False
 
 
 def _global_semantic_check(fa: dict, fb: dict) -> Optional[bool]:

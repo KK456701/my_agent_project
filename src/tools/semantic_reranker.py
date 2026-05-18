@@ -21,9 +21,17 @@ def _get_model():
     if _MODEL is not None:
         return _MODEL
     try:
-        from modelscope import snapshot_download
         from sentence_transformers import SentenceTransformer
+
+        # 先检查本地缓存，避免 snapshot_download 每次都打印"Downloading"
         _LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        local_model_dir = _LOCAL_DIR / _MODEL_NAME
+        if local_model_dir.exists() and (local_model_dir / "pytorch_model.bin").exists():
+            _MODEL = SentenceTransformer(str(local_model_dir))
+            return _MODEL
+
+        # 本地没有才真正下载
+        from modelscope import snapshot_download
         model_path = snapshot_download(_MODEL_NAME, cache_dir=str(_LOCAL_DIR))
         _MODEL = SentenceTransformer(model_path)
         return _MODEL

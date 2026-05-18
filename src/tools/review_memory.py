@@ -3,11 +3,11 @@ Markdown 审查记忆系统 — 零依赖的长期知识库
 
 思路：像 Claude Code 一样用 Markdown 文件做知识存储
 - memory/patterns/   → 按问题类型分类的模式知识（如 sql_injection.md）
-- memory/reviews/    → 每次审查的完整报告归档
+- reports/           → 每次审查的完整报告（由 app.py 自动保存）
 
 工作流：
   审查前 → 扫描 PR diff → 匹配已知模式 → 注入到 Agent prompt
-  审查后 → 提取新发现 → 更新/创建模式文件 → 归档报告
+  审查后 → 提取新发现 → 更新/创建模式文件
 """
 import re
 import hashlib
@@ -18,7 +18,6 @@ from typing import List, Tuple, Optional
 # 记忆存储根目录
 MEMORY_ROOT = Path(__file__).parent.parent.parent / "memory"
 PATTERNS_DIR = MEMORY_ROOT / "patterns"
-REVIEWS_DIR = MEMORY_ROOT / "reviews"
 
 # ── 召回配置 ──
 MAX_PATTERNS_INJECTED = 5        # 最多注入 5 个模式（防止上下文爆炸）
@@ -183,22 +182,15 @@ def recall_knowledge(pr_diff: str) -> str:
 
 def save_review_to_memory(report: str, pr_diff: str, title: str = ""):
     """
-    审查完成后，将发现归档到记忆库
+    审查完成后，从报告中提取发现并归档到记忆库
     
-    1. 保存完整报告到 memory/reviews/
-    2. 从报告中提取问题 → 更新/创建 memory/patterns/ 下的模式文件
+    从报告中正则提取 finding → 更新/创建 memory/patterns/ 下的模式文件
+    （完整报告由 app.py 保存到 reports/ 目录）
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    safe_title = _slugify(title)[:40] if title else "review"
 
-    # ── 1. 保存完整报告 ──
-    review_file = REVIEWS_DIR / f"{timestamp}_{safe_title}.md"
-    review_file.write_text(report, encoding="utf-8")
-
-    # ── 2. 提取问题并更新模式文件 ──
+    # 提取问题并更新模式文件
     _extract_and_update_patterns(report, pr_diff, title, timestamp)
-
-    return review_file
 
 
 def _extract_and_update_patterns(report: str, pr_diff: str, title: str, timestamp: str):
@@ -330,7 +322,6 @@ def _update_pattern(pattern_file: Path, finding: dict, title: str, timestamp: st
 def get_memory_stats() -> dict:
     """获取记忆库统计信息"""
     patterns = list(PATTERNS_DIR.glob("*.md"))
-    reviews = list(REVIEWS_DIR.glob("*.md"))
 
     total_cases = 0
     for p in patterns:
@@ -341,6 +332,5 @@ def get_memory_stats() -> dict:
 
     return {
         "pattern_files": len(patterns),
-        "review_files": len(reviews),
         "total_cases": total_cases,
     }

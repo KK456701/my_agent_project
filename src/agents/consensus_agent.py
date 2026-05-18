@@ -25,7 +25,7 @@ class ConsensusAgent:
         prompt_path = Path(__file__).parent.parent.parent / "prompts" / "consensus.md"
         self.system_prompt = prompt_path.read_text(encoding="utf-8")
 
-    async def resolve(self, conflict: dict, debate_history: list[dict] | None = None) -> dict:
+    async def resolve(self, conflict: dict, debate_history: list[dict] | None = None, round_num: int = 1) -> dict:
         """
         裁决一个冲突
         
@@ -37,7 +37,8 @@ class ConsensusAgent:
                 "code_snippet": str,
                 "positions": {domain: argument, ...},
             }
-            debate_history: 之前的辩论记录
+            debate_history: 之前的辩论记录（[{round, conflict_id, status, resolution, positions}, ...]）
+            round_num: 当前轮次（1-3）
         
         Returns:
             {
@@ -57,8 +58,11 @@ class ConsensusAgent:
             history_items = []
             for h in debate_history:
                 if h.get("conflict_id") == conflict.get("conflict_id"):
+                    prev_round = h.get("round", "?")
+                    prev_status = h.get("status", "?")
+                    prev_resolution = h.get("resolution", "")
                     history_items.append(
-                        f"第 {h.get('round', '?')} 轮: {h.get('domain')} Agent 说: {h.get('argument', '')}"
+                        f"第 {prev_round} 轮: 状态={prev_status}, 结果={prev_resolution}"
                     )
             if history_items:
                 history_text = "\n".join(history_items)
@@ -71,6 +75,9 @@ class ConsensusAgent:
 ```python
 {conflict.get('code_snippet', '')}
 ```
+
+## 当前轮次
+第 {round_num} 轮（共 3 轮）
 
 ## 各方立场
 {positions_text}

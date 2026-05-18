@@ -269,14 +269,16 @@ async def debate_round(state: DebateState) -> dict:
         if conflict.get("status") == "resolved":
             return ("skip", conflict)
 
+        current_round = debate_round + 1
+
         async with semaphore:
             consensus_agent = ConsensusAgent()
-            resolution = await consensus_agent.resolve(conflict, debate_history)
+            resolution = await consensus_agent.resolve(conflict, debate_history, round_num=current_round)
 
-        conflict["debate_rounds"] = debate_round + 1
+        conflict["debate_rounds"] = current_round
 
         if resolution.get("resolution") == "stalemate":
-            if debate_round + 1 >= config.MAX_DEBATE_ROUNDS:
+            if current_round >= config.MAX_DEBATE_ROUNDS:
                 conflict["status"] = "escalated"
                 return ("escalated", conflict)
             else:
@@ -301,13 +303,14 @@ async def debate_round(state: DebateState) -> dict:
         else:
             resolved.append(conflict)
 
-    # 记录本轮辩论历史
-    new_history = [
+    # 记录本轮辩论历史（包含各方立场，供下一轮参考）
+    new_history = debate_history + [
         {
             "round": debate_round + 1,
             "conflict_id": c.get("conflict_id"),
             "status": c.get("status"),
             "resolution": c.get("resolution", ""),
+            "positions": c.get("positions", {}),
         }
         for c in conflicts
     ]

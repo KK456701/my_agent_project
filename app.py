@@ -99,12 +99,12 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
     # 自动保存报告
     _save_report(report, output_file, title)
 
-    # 🧠 归档到 Markdown 记忆库
+    # 🧠 归档到 Markdown 记忆库（从报告提取 finding → 更新 patterns/）
     try:
         from src.tools.review_memory import save_review_to_memory, get_memory_stats
-        memory_file = save_review_to_memory(report, diff_text, title)
+        save_review_to_memory(report, diff_text, title)
         stats = get_memory_stats()
-        console.print(f"[dim]🧠 记忆库: {stats['pattern_files']} 个模式 / {stats['review_files']} 份报告 / {stats['total_cases']} 个案例[/]")
+        console.print(f"[dim]🧠 记忆库: {stats['pattern_files']} 个模式 / {stats['total_cases']} 个案例[/]")
     except Exception:
         pass  # 记忆归档失败不影响主流程
 
