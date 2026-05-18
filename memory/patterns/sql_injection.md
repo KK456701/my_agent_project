@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 43
+## 审查次数: 46
 
 ## 历史案例
 
@@ -356,3 +356,27 @@
 - **严重程度**: critical
 - **描述**: get_users_orders 函数同时存在两个严重问题：1) SQL 注入：username 通过 f-string 直接拼接到 SQL 查询中，攻击者可以构造恶意 username 参数执行任意 SQL；2) N+1 查询：在 for 循环内逐条执行数据库查询，对于 1000 个用户名，会产生 1001 次数据库往返。这两个问题在同一行代码上（query = f"SELECT * FROM
 - **建议**: 同时修复两个问题：使用参数化查询 + IN 子句批量查询。示例：placeholders = ','.join(['?'] * len(usernames)); cursor.execute(f"SELECT * FROM orders WHERE username IN ({placeholders})", usernames)。这样既防止了 SQL 注入（参数化查询），又将 N+1 次查询降为 1 次（批量查询）。注意：IN 子句的参数化在 SQLite 中支持，但在某些数据库（如 MySQL）中需要注意参数数量限制。
+
+### 案例 44
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:82-87
+- **严重程度**: critical
+- **描述**: 在 save_user_data_encrypted 函数中，user['id'] 和 encrypted.hex() 直接通过 f-string 拼接到 SQL 查询中。虽然 encrypted.hex() 是十六进制字符串相对安全，但 user['id'] 来自用户输入，存在 SQL 注入风险。
+- **建议**: 使用参数化查询：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))
+
+### 案例 45
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:72-80
+- **严重程度**: critical
+- **描述**: 在 search_orders 函数中，keyword 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 keyword 参数，例如 ' OR 1=1 --'，从而执行任意 SQL 命令。这是最严重的安全漏洞之一。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于大多数数据库驱动，应使用 %s 或 ? 占位符。修改为：cursor.execute("SELECT * FROM orders WHERE title LIKE ?", (f'%{keyword}%',))
+
+### 案例 46
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:88-101
+- **严重程度**: critical
+- **描述**: 在 save_user_data_encrypted 函数中，user['id'] 和 encrypted.hex() 直接通过 f-string 拼接到 INSERT 语句中。如果 user['id'] 来自用户输入，攻击者可以构造恶意 ID 执行 SQL 注入。
+- **建议**: 使用参数化查询：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))

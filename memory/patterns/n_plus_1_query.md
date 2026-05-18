@@ -6,7 +6,7 @@
 ## 标准修复
 根据上下文进行更精确的清洗。例如，如果是为了防止 XSS，应使用专门的 HTML 转义库（如 html.escape）而不是直接删除字符。如果是为了防止 SQL 注入，应使用参数化查询，而不是依赖输入清洗。
 
-## 审查次数: 17
+## 审查次数: 18
 
 ## 历史案例
 
@@ -148,3 +148,11 @@
 - **严重程度**: medium
 - **描述**: 在 get_users_orders 函数中，orders.extend(cursor.fetchall()) 在每次循环中都会扩展列表。对于大量数据，多次 extend 会导致列表多次重新分配内存。虽然这不是最严重的性能问题，但在大数据量下会有影响。
 - **建议**: 使用列表推导式或 itertools.chain 一次性收集所有结果：all_orders = list(itertools.chain.from_iterable(cursor.fetchall() for _ in usernames))。或者使用批量查询后直接返回结果。
+
+### 案例 18
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:88-101
+- **严重程度**: high
+- **描述**: 在 save_user_data_encrypted 函数中，AES.new() 在循环外创建一次，但每次加密都使用相同的 IV（固定 IV）。更严重的是，AES 的 CBC 模式要求每个加密操作使用不同的 IV，否则会降低安全性。此外，循环内执行数据库插入操作，导致 N+1 次数据库往返。
+- **建议**: 1. 为每条记录生成随机 IV，并将 IV 与密文一起存储。2. 使用批量插入替代逐条插入，将 N 次数据库往返降为 1 次。3. 考虑使用数据库级别的加密功能（如 TDE）替代应用层加密。

@@ -146,12 +146,10 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
     """
     检测需要辩论的对抗性冲突。
 
-    简化流程（2 分支）：
-      同位置(line overlap) → 看修复是否互斥
-      不同位置              → 看是否同一问题（跨行冲突）
+    唯一判据：修复互斥 → 对抗。位置只是辅助信号。
     
-    核心原则：位置信号前置，修复互斥是主判据。
-    灰色地带默认保守（不辩论），宁漏勿滥。
+    同位置 → 直接看修复互斥
+    不同位置 + 同一问题 → 也看修复互斥（跨行冲突）
     """
     all_findings = []
     for domain, findings in findings_by_domain.items():
@@ -179,14 +177,15 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
             close = abs(la_s - lb_s) <= 5 if la_s >= 0 and lb_s >= 0 else False
             has_line = lap > 0 or close
 
-            # ── 2 分支判定 ──
+            # ── 判定 ──
             if has_line:
+                # 同位置 → 直接看修复是否互斥
+                adv = _check_contradiction_v2(fa, fb)
+            elif _check_same_issue(fa, fb):
+                # 不同位置 + 同一问题 → 也看修复是否互斥（跨行冲突）
                 adv = _check_contradiction_v2(fa, fb)
             else:
-                # 不同位置 → 同一问题才对抗（跨行冲突），否则跳过
-                adv = _check_same_issue(fa, fb) or None
-                if adv is False:
-                    continue  # 不同位置 + 不同问题 → 跳过
+                continue  # 不同位置 + 不同问题 → 跳过
 
             seen.add((min(i, j), max(i, j)))
             conflict_id += 1

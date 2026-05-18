@@ -6,7 +6,7 @@
 ## 标准修复
 将密钥移至环境变量或安全的密钥管理服务中，例如：SECRET_KEY = os.environ.get('SECRET_KEY')。如果密钥必须存储在代码中，应使用配置文件并确保其不被提交到版本控制系统。
 
-## 审查次数: 45
+## 审查次数: 49
 
 ## 历史案例
 
@@ -372,3 +372,35 @@
 - **严重程度**: medium
 - **描述**: ENCRYPTION_KEY = 'hardcoded-key-1234' 被硬编码在源代码中。虽然这是性能问题，但硬编码密钥会导致：1) 密钥泄露风险（代码被提交到版本控制）；2) 密钥轮换困难（需要修改代码重新部署）；3) 所有环境使用相同密钥。
 - **建议**: 将加密密钥移至环境变量或密钥管理服务（如 AWS KMS、HashiCorp Vault）。示例：ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')。如果必须使用固定密钥，应确保密钥文件不被提交到版本控制系统。
+
+### 案例 46
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:42-43
+- **严重程度**: high
+- **描述**: 密码哈希使用的 salt 被硬编码为 'hardcoded-salt-123'。如果攻击者获取到源代码，可以预计算彩虹表，绕过密码验证。
+- **建议**: 使用 bcrypt 或 argon2 等专用密码哈希库，它们会自动生成随机 salt 并存储在哈希结果中。例如：bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+### 案例 47
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:43
+- **严重程度**: high
+- **描述**: 使用 SHA256 对密码进行哈希，没有使用慢哈希函数（如 bcrypt、argon2、scrypt）。SHA256 是快速哈希，攻击者可以高速暴力破解密码。
+- **建议**: 改用 bcrypt：bcrypt.hashpw(password.encode(), bcrypt.gensalt()) 进行存储，bcrypt.checkpw(password.encode(), stored_hash) 进行验证。
+
+### 案例 48
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:55-60
+- **严重程度**: high
+- **描述**: 使用 SHA256 + 固定 salt 进行密码验证。SHA256 是快速哈希函数，攻击者可以每秒尝试数百万次密码。固定 salt 意味着所有用户使用相同的 salt，彩虹表攻击仍然有效。虽然性能好，但安全性严重不足。
+- **建议**: 使用 bcrypt、scrypt 或 argon2 等专用密码哈希函数。如果性能是硬性要求，可以考虑使用 SHA256 进行多次迭代（如 10000 次以上），并使用每个用户独立的随机 salt。
+
+### 案例 49
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:88-101
+- **严重程度**: medium
+- **描述**: ENCRYPTION_KEY = "hardcoded-aes-key!!" 被硬编码在源代码中。攻击者可以通过访问源代码或反编译获取此密钥，进而解密所有加密数据。
+- **建议**: 将密钥移至环境变量或安全的密钥管理服务中，例如：ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')。

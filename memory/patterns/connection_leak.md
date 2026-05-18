@@ -6,7 +6,7 @@
 ## 标准修复
 1. 使用 functools.lru_cache 或 cachetools.TTLCache 替代手动字典缓存。2. 设置合理的 TTL 和最大缓存大小。3. 使用线程安全的缓存实现（如 Redis）或添加锁保护。
 
-## 审查次数: 8
+## 审查次数: 10
 
 ## 历史案例
 
@@ -76,3 +76,19 @@
 - **严重程度**: high
 - **描述**: _TOKEN_CACHE 是一个全局字典，缓存键使用 token[-20:] 存在碰撞风险，且缓存条目永不过期。随着时间推移，所有访问过的 Token 都会永久驻留内存，导致内存持续增长直至 OOM。
 - **建议**: 1. 使用 functools.lru_cache(maxsize=10000) 或 cachetools.TTLCache 替代手动字典。2. 设置合理的 TTL（如 300 秒）和最大缓存大小。3. 使用完整的 Token 哈希作为缓存键避免碰撞。
+
+### 案例 9
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:26
+- **严重程度**: high
+- **描述**: JWT 解析结果被缓存到全局字典 _TOKEN_CACHE 中且永不过期。一旦某个 Token 被泄露或用户权限被撤销，攻击者可以永久使用该缓存的 payload 进行越权操作，因为缓存不会失效。
+- **建议**: 1. 添加 TTL（过期时间）到缓存条目，例如使用 cachetools.TTLCache。2. 在 Token 验证时检查 JWT 的 exp（过期时间）声明。3. 考虑使用 Redis 等外部缓存并设置合理的过期时间。
+
+### 案例 10
+- **日期**: 2026-05-18_131226
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:28-40
+- **严重程度**: high
+- **描述**: _TOKEN_CACHE 是一个全局字典，缓存键为 token[-20:]，且缓存永不过期。随着时间推移，所有访问过的 Token 都会永久驻留在内存中，导致内存无限增长。在长期运行的服务中，这会造成严重的内存泄漏。
+- **建议**: 1. 使用 functools.lru_cache 或 cachetools.TTLCache 替代手动字典缓存。2. 设置合理的 TTL（如 5 分钟）和最大缓存大小（如 1000 条）。3. 使用更安全的缓存键（如 Token 的完整 SHA256 哈希）。
