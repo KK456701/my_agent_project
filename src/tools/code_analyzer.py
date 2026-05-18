@@ -237,17 +237,17 @@ def _check_same_issue(fa: dict, fb: dict) -> bool:
 
 def _check_contradiction_v2(fa: dict, fb: dict) -> bool:
     """
-    硬编码规则判断两个 finding 的修复建议是否互斥。
+    三层架构判断两个 finding 的修复建议是否互斥：
     
-    为什么只有规则、没有 semantic 兜底：
-    - embedding 算余弦相似度，衡量语义接近程度，不是逻辑矛盾关系
-    - '删除缓存' vs '加 TTL 缓存' → 0.999 相似 → 被误判为不矛盾
-    - 真正能做矛盾检测的是 NLI 模型，但引入额外复杂度
-    - 5 类高置信度互斥对覆盖 90%+ 场景，省下的模型依赖和推理开销更务实
+      Layer 1: 硬编码规则（0 Token, < 1ms）
+        5 类高置信度互斥对 + 跨词对组合
+      Layer 2: NLI 矛盾检测（本地模型, ~50ms）
+        StructBERT NLI 模型，双向 contradiction 检测
+        规则未命中时兜底，捕获规则覆盖不到的矛盾
     
     Returns:
         True  = 修复建议互斥
-        False = 非互斥（包括无法判断 → 保守默认）
+        False = 非互斥（包括模型不可用 → 保守默认）
     """
     fix_a = (fa.get("suggestion", "") + " " + fa.get("fix", "")).strip()
     fix_b = (fb.get("suggestion", "") + " " + fb.get("fix", "")).strip()
@@ -292,6 +292,15 @@ def _check_contradiction_v2(fa: dict, fb: dict) -> bool:
         a_keep = any(w in fix_a_lower for w in keep_words)
         if b_del and a_keep:
             return True
+
+    # ── NLI 矛盾检测兜底（规则未命中时）──
+    try:
+        from src.tools.semantic_reranker import check_contradiction
+        result = check_contradiction(fix_a[:300], fix_b[:300])
+        if result is not None:
+            return result
+    except Exception:
+        pass
 
     return False
 
