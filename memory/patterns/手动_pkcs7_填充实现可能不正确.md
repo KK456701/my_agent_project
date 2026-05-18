@@ -6,7 +6,7 @@
 ## 标准修复
 使用 pycryptodome 库的 pad 函数：from Crypto.Util.Padding import pad; padded = pad(raw.encode(), 16)
 
-## 审查次数: 1
+## 审查次数: 2
 
 ## 历史案例
 
@@ -20,3 +20,11 @@
 
 ---
 > 本文件由 Agent 自动维护，后续同类问题会自动追加案例。
+
+### 案例 2
+- **日期**: 2026-05-18_131922
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:90-91
+- **严重程度**: medium
+- **描述**: 手动实现的 PKCS7 填充使用 chr(pad) 生成填充字节，但 chr() 返回的是 Unicode 字符，而不是字节。在 Python 3 中，chr(pad) 对于 pad 值 1-16 会返回对应的控制字符，但后续的 encode() 可能产生意外的结果。
+- **建议**: 使用标准库的填充实现，例如：from Crypto.Util.Padding import pad; padded = pad(raw.encode(), 16)

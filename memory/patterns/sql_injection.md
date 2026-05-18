@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 46
+## 审查次数: 48
 
 ## 历史案例
 
@@ -379,4 +379,20 @@
 - **文件**: adversarial_test.py:88-101
 - **严重程度**: critical
 - **描述**: 在 save_user_data_encrypted 函数中，user['id'] 和 encrypted.hex() 直接通过 f-string 拼接到 INSERT 语句中。如果 user['id'] 来自用户输入，攻击者可以构造恶意 ID 执行 SQL 注入。
+- **建议**: 使用参数化查询：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))
+
+### 案例 47
+- **日期**: 2026-05-18_131922
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:68
+- **严重程度**: info
+- **描述**: 在 search_orders 函数中，keyword 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 keyword 参数，例如 ' OR 1=1 --，导致数据泄露或破坏。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM orders WHERE title LIKE ?", ('%' + keyword + '%',))
+
+### 案例 48
+- **日期**: 2026-05-18_131922
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:93-94
+- **严重程度**: critical
+- **描述**: 在 save_user_data_encrypted 函数中，encrypted.hex() 直接通过 f-string 拼接到 SQL 查询字符串中。虽然 encrypted.hex() 只包含十六进制字符，但攻击者如果能够控制 user['id'] 或加密前的数据，仍可能通过构造特殊数据导致注入。
 - **建议**: 使用参数化查询：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))
