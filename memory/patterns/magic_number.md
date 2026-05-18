@@ -6,7 +6,7 @@
 ## 标准修复
 直接累加，避免中间列表。修改为：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)。将 0.15 定义为常量 TAX_RATE = 0.15。
 
-## 审查次数: 2
+## 审查次数: 3
 
 ## 历史案例
 
@@ -28,3 +28,11 @@
 - **严重程度**: low
 - **描述**: 函数先创建 prices 列表再求和，可以简化为直接累加。0.15 是魔法数字，应该定义为模块级常量（如 TAX_RATE = 0.15）。这违反了代码可维护性原则：魔法数字难以理解和修改，且容易在多个地方不一致。
 - **建议**: 1) 定义常量 TAX_RATE = 0.15。2) 使用 sum() 和生成器表达式简化：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)。
+
+### 案例 3
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:100-112
+- **严重程度**: low
+- **描述**: 该函数先构建 prices 列表，再遍历求和，可以合并为一次遍历。0.15 是魔法数字，应定义为模块级常量（如 TAX_RATE = 0.15）。虽然是小问题，但反映了代码可维护性方面的不足。
+- **建议**: 1. 将 0.15 定义为常量 TAX_RATE。2. 使用 sum() 和生成器表达式简化：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)。

@@ -6,7 +6,7 @@
 ## 标准修复
 改为 logging.getLogger(__name__).info/debug/warning/error()
 
-## 审查次数: 1
+## 审查次数: 2
 
 ## 历史案例
 
@@ -20,3 +20,11 @@
 
 ---
 > 本文件由 Agent 自动维护，后续同类问题会自动追加案例。
+
+### 案例 2
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:212
+- **严重程度**: medium
+- **描述**: Skills 规则命中: print\(.*\)
+- **建议**: 改为 logging.getLogger(__name__).info/debug/warning/error()

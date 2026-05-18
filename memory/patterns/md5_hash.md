@@ -6,7 +6,7 @@
 ## 标准修复
 使用 Token 的完整 SHA256 哈希作为缓存键，或者使用用户 ID + Token 的哈希组合。更安全的做法是使用 JWT 的 jti（JWT ID）声明作为缓存键，因为它是唯一的。
 
-## 审查次数: 5
+## 审查次数: 8
 
 ## 历史案例
 
@@ -52,3 +52,27 @@
 - **严重程度**: high
 - **描述**: auth_require_permission 装饰器中的 _TOKEN_CACHE 缓存了 JWT 解析结果，但：1. 缓存 key 只取 token 后 20 位，可能导致不同 token 产生相同 key（哈希冲突），返回错误结果。2. 缓存永不过期，token 被吊销后仍可使用。3. 缓存是全局字典，无并发保护。
 - **建议**: 1. 使用完整的 token SHA256 哈希作为缓存 key。2. 为缓存添加 TTL（如 5 分钟），或使用 Redis 等支持过期时间的缓存。3. 如果必须缓存，应同时缓存 token 的过期时间并验证。修改为：cache_key = hashlib.sha256(token.encode()).hexdigest(); 并检查 payload 中的 exp 字段。
+
+### 案例 6
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:120
+- **严重程度**: high
+- **描述**: Skills 规则命中: hashlib\.md5\(
+- **建议**: 改为 bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+### 案例 7
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:196-210
+- **严重程度**: high
+- **描述**: auth_require_permission 装饰器中的 _TOKEN_CACHE 缓存了 JWT 解析结果，但：1. 缓存 key 只取 token 后 20 位，可能导致不同 token 产生相同 key（哈希冲突）；2. 缓存没有过期时间，已吊销的 token 仍会被视为有效；3. 缓存是全局可变状态，存在线程安全问题。
+- **建议**: 1. 使用完整的 token 哈希作为缓存 key。2. 为缓存添加 TTL（如 5 分钟），或使用 Redis 等支持过期时间的缓存。3. 如果必须缓存，应同时缓存 token 的过期时间并验证。
+
+### 案例 8
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:24-26
+- **严重程度**: high
+- **描述**: 缓存键 cache_key = token[-20:] 只使用了 JWT 的后 20 个字符。这可能导致不同 Token 产生相同的缓存键（哈希冲突），从而返回错误的认证结果，造成越权访问。攻击者可以构造后 20 字符相同的恶意 Token 来利用此漏洞。
+- **建议**: 使用 Token 的完整 SHA256 哈希作为缓存键，或者使用 JWT 的 jti（JWT ID）声明作为缓存键。修改为：import hashlib; cache_key = hashlib.sha256(token.encode()).hexdigest()

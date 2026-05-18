@@ -6,7 +6,7 @@
 ## 标准修复
 1. 使用 functools.lru_cache 或 cachetools.TTLCache 替代手动字典缓存。2. 设置合理的 TTL 和最大缓存大小。3. 使用线程安全的缓存实现（如 Redis）或添加锁保护。
 
-## 审查次数: 4
+## 审查次数: 8
 
 ## 历史案例
 
@@ -44,3 +44,35 @@
 - **严重程度**: medium
 - **描述**: _CONFIG_CACHE 是一个全局字典，缓存的数据永不过期、永不淘汰。随着时间推移，缓存会无限增长，可能导致内存泄漏。同时，如果数据库中的配置被更新，缓存不会同步更新，导致返回过时的配置值。
 - **建议**: 1. 使用 functools.lru_cache 并设置 maxsize。2. 或使用支持 TTL 的缓存库（如 cachetools.TTLCache）。3. 实现缓存失效机制，当配置更新时主动清除缓存。
+
+### 案例 5
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:24-28
+- **严重程度**: high
+- **描述**: get_db() 函数每次调用都创建新的数据库连接，且没有连接池、没有上下文管理器、没有异常处理。调用方（如 get_user_orders_n_plus_1、save_user_data_encrypted）在 finally 中关闭连接，但部分调用（如 login_user）根本没有关闭连接，导致连接泄漏。这种设计使得数据库资源管理不可靠，在高并发下会耗尽连接。
+- **建议**: 1. 使用上下文管理器封装连接生命周期：with get_db() as conn:。2. 引入连接池（如 sqlite3 的 connection 复用或使用 SQLAlchemy 的池化）。3. 将 get_db 改为返回连接池中的连接，并确保调用方通过 with 语句使用。
+
+### 案例 6
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:295-301
+- **严重程度**: medium
+- **描述**: get_config_with_cache 函数使用全局字典 _CONFIG_CACHE 缓存配置，但：1. 缓存永不过期，配置变更后不会更新。2. 字典不是线程安全的，并发写入可能导致数据损坏。3. 没有缓存大小限制，可能内存泄漏。
+- **建议**: 使用 functools.lru_cache(maxsize=128) 替代手动缓存，或使用 Redis 等支持 TTL 的缓存系统。如果必须用内存缓存，添加 TTL 检查和线程锁。
+
+### 案例 7
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:27
+- **严重程度**: high
+- **描述**: _TOKEN_CACHE 中的缓存项永不过期。如果某个 JWT Token 被泄漏或用户权限被撤销，攻击者可以永久使用该 Token 的缓存结果，直到服务重启。这违反了最小权限原则和会话管理的最佳实践。
+- **建议**: 为缓存添加 TTL（过期时间），例如使用 cachetools.TTLCache 或手动记录时间戳。修改为：from cachetools import TTLCache; _TOKEN_CACHE = TTLCache(maxsize=10000, ttl=300)  # 5分钟过期
+
+### 案例 8
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:21-35
+- **严重程度**: high
+- **描述**: _TOKEN_CACHE 是一个全局字典，缓存键使用 token[-20:] 存在碰撞风险，且缓存条目永不过期。随着时间推移，所有访问过的 Token 都会永久驻留内存，导致内存持续增长直至 OOM。
+- **建议**: 1. 使用 functools.lru_cache(maxsize=10000) 或 cachetools.TTLCache 替代手动字典。2. 设置合理的 TTL（如 300 秒）和最大缓存大小。3. 使用完整的 Token 哈希作为缓存键避免碰撞。

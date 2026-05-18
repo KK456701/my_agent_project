@@ -6,7 +6,7 @@
 ## 标准修复
 使用 Python 的 logging 模块，配置适当的日志级别（如 INFO）和处理器（如文件处理器、SysLog 处理器）。
 
-## 审查次数: 1
+## 审查次数: 2
 
 ## 历史案例
 
@@ -20,3 +20,11 @@
 
 ---
 > 本文件由 Agent 自动维护，后续同类问题会自动追加案例。
+
+### 案例 2
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:212-213
+- **严重程度**: medium
+- **描述**: auth_require_permission 装饰器中使用 print() 函数记录审计日志。print() 不支持日志级别、日志轮转、结构化输出等功能，不适合生产环境。
+- **建议**: 使用 Python 的 logging 模块。修改为：logging.getLogger(__name__).info(f'[AUDIT] {payload.get("sub")} accessed')

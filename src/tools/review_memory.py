@@ -305,25 +305,29 @@ def _create_pattern(pattern_file: Path, name: str, finding: dict, title: str, ti
 
 
 def _update_pattern(pattern_file: Path, finding: dict, title: str, timestamp: str):
-    """更新已有模式文件：增加案例 + 更新计数"""
+    """更新已有模式文件：增加案例 + 更新计数（相同文件+行号去重）"""
     current = pattern_file.read_text(encoding="utf-8")
 
     # 更新审查次数
     count_match = re.search(r'## 审查次数: (\d+)', current)
-    if count_match:
-        new_count = int(count_match.group(1)) + 1
-        current = current.replace(
-            f"## 审查次数: {count_match.group(1)}",
-            f"## 审查次数: {new_count}"
-        )
+    old_count = int(count_match.group(1)) if count_match else 0
+    current = current.replace(
+        f"## 审查次数: {old_count}",
+        f"## 审查次数: {old_count + 1}"
+    )
+
+    # 去重：检查是否已有相同文件+行号的案例
+    file_lines = f"{finding['file']}:{finding['lines']}"
+    if file_lines in current:
+        return  # 已有相同位置的案例，只更新计数，不追加重复案例
 
     # 追加新案例
-    case_num = count_match and int(count_match.group(1)) or 1
+    case_num = old_count + 1
     new_case = f"""
-### 案例 {case_num + 1}
+### 案例 {case_num}
 - **日期**: {timestamp}
 - **来源 PR**: {title}
-- **文件**: {finding['file']}:{finding['lines']}
+- **文件**: {file_lines}
 - **严重程度**: {finding['severity']}
 - **描述**: {finding['description']}
 - **建议**: {finding['suggestion']}

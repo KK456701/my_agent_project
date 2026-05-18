@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 26
+## 审查次数: 39
 
 ## 历史案例
 
@@ -220,3 +220,107 @@
 - **严重程度**: medium
 - **描述**: sanitize_user_input_batch 函数同时处理了XSS过滤、字符清洗、SQL关键字过滤三种不同安全策略，且正则表达式硬编码在函数内部。这违反了单一职责和开闭原则：添加新的清洗规则需要修改函数本身，且无法复用单个清洗策略。
 - **建议**: 1) 将清洗策略拆分为独立的函数/类：remove_xss()、sanitize_special_chars()、prevent_sql_injection()。2) 使用策略模式或责任链模式组合清洗规则。3) 将正则表达式提取为模块级常量或配置。
+
+### 案例 27
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:73
+- **严重程度**: info
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 28
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:261
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 29
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:295
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 30
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:44-45
+- **严重程度**: critical
+- **描述**: login_user 函数中，username 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 username 参数，例如 ' OR '1'='1，从而绕过认证并获取所有用户数据。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+
+### 案例 31
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:73-74
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数中，user_id 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 user_id 参数，例如 1; DROP TABLE orders;--，从而执行任意 SQL 命令。
+- **建议**: 使用参数化查询。修改为：cursor.execute('SELECT * FROM orders WHERE user_id = ?', (user_id,))
+
+### 案例 32
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:261-262
+- **严重程度**: critical
+- **描述**: save_user_data_encrypted 函数中，user['id'] 和 encoded 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 user['id'] 或加密数据，从而执行任意 SQL 命令。
+- **建议**: 使用参数化查询。修改为：cursor.execute('INSERT INTO users_encrypted (id, data) VALUES (?, ?)', (user['id'], encoded))
+
+### 案例 33
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:295-296
+- **严重程度**: critical
+- **描述**: get_config_with_cache 函数中，key 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 key 参数，例如 ' UNION SELECT password FROM users;--，从而窃取敏感数据。
+- **建议**: 使用参数化查询。修改为：cursor.execute('SELECT value FROM config WHERE key = ?', (key,))
+
+### 案例 34
+- **日期**: 2026-05-18_104408
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:72-82
+- **严重程度**: critical
+- **描述**: 在 get_user_orders_n_plus_1 函数中，对每个 user_id 都执行一次独立的 SQL 查询。如果 user_ids 有 1000 个元素，就会产生 1001 次数据库往返（1 次连接 + 1000 次查询），时间复杂度 O(N)。
+- **建议**: 使用 SQL IN 子句一次查询所有订单，将数据库往返次数降为 2 次（连接 + 查询）。修改为：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)，然后按 user_id 分组。
+
+### 案例 35
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:60-63
+- **严重程度**: info
+- **描述**: keyword 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 keyword 参数，例如 ' OR 1=1 --，导致 SQL 注入攻击，可能泄露、篡改或删除数据库中的所有数据。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM orders WHERE title LIKE ?", ('%' + keyword + '%',))
+
+### 案例 36
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:82-86
+- **严重程度**: critical
+- **描述**: 在 save_user_data_encrypted 函数中，user['id'] 和 encrypted.hex() 通过 f-string 拼接到 SQL 查询中。虽然 encrypted.hex() 是十六进制字符串相对安全，但 user['id'] 来自用户数据，可能包含恶意 SQL 代码，导致 SQL 注入攻击。
+- **建议**: 使用参数化查询。修改为：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))
+
+### 案例 37
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:66-72
+- **严重程度**: critical
+- **描述**: search_orders 函数使用 f-string 直接将 keyword 拼接到 SQL 查询中，攻击者可以构造恶意 keyword 参数执行任意 SQL 命令。虽然注释提到参数化可能导致索引失效，但这是错误的假设：参数化查询不会导致索引失效，优化器会根据参数值选择执行计划。
+- **建议**: 使用参数化查询：cursor.execute("SELECT * FROM orders WHERE title LIKE ?", (f'%{keyword}%',))。如果担心参数嗅探问题，可以使用 OPTION (RECOMPILE) 或查询提示。
+
+### 案例 38
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:86-100
+- **严重程度**: high
+- **描述**: 1. 在循环外创建 cipher 对象，但 CBC 模式要求每个加密操作使用不同的 IV，固定 IV 会破坏加密安全性。2. 循环内每次执行 db.execute() 而不是批量插入，导致 10000 次数据库往返。3. 使用 f-string 拼接 SQL 存在注入风险。
+- **建议**: 1. 为每条记录生成随机 IV 并存储。2. 使用 executemany() 批量插入：db.executemany("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", batch_data)。3. 使用参数化查询。4. 考虑使用数据库 TDE 替代应用层加密以减少性能开销。
+
+### 案例 39
+- **日期**: 2026-05-18_104728
+- **来源 PR**: adversarial_test.py
+- **文件**: adversarial_test.py:86-100
+- **严重程度**: medium
+- **描述**: 循环内每次调用 db.execute() 插入一条记录，对于 10000 条数据需要 10000 次数据库往返，网络延迟和事务开销巨大。
+- **建议**: 收集所有加密后的数据，使用 executemany() 或批量 INSERT 语句一次提交：db.executemany("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", [(u['id'], enc.hex()) for u, enc in zip(users, encrypted_data)])
