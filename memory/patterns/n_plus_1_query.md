@@ -6,7 +6,7 @@
 ## 标准修复
 根据上下文进行更精确的清洗。例如，如果是为了防止 XSS，应使用专门的 HTML 转义库（如 html.escape）而不是直接删除字符。如果是为了防止 SQL 注入，应使用参数化查询，而不是依赖输入清洗。
 
-## 审查次数: 13
+## 审查次数: 17
 
 ## 历史案例
 
@@ -116,3 +116,35 @@
 - **严重程度**: medium
 - **描述**: 在 auth_require_permission 装饰器中，使用 time.sleep(0.01) 模拟频率限制。这会阻塞当前线程，在高并发场景下（如 1000 QPS）会导致严重的性能瓶颈，因为每个请求都要等待 10ms。
 - **建议**: 使用异步限流库（如 asyncio 环境下的 aioredis 限流）或基于计数器的内存限流（如令牌桶算法），避免阻塞。如果必须同步，考虑使用非阻塞的计数器检查。
+
+### 案例 14
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:107-114
+- **严重程度**: high
+- **描述**: get_users_orders 函数在 for 循环内逐条执行数据库查询，导致 N+1 次数据库往返（N 为 usernames 列表长度）。如果 usernames 有 1000 个元素，将产生 1000 次独立的数据库查询，P99 延迟会急剧上升。同时，逐条 extend 结果列表也增加了 Python 层面的开销。
+- **建议**: 使用批量查询（IN 子句）一次性获取所有用户的订单。结合参数化查询，修改为：placeholders = ','.join(['?'] * len(usernames)); cursor.execute(f"SELECT * FROM orders WHERE username IN ({placeholders})", usernames); orders = cursor.fetchall()。注意：IN 子句的参数化在不同数据库中语法略有差异，但 sqlite3 支持此方式。
+
+### 案例 15
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:63-80
+- **严重程度**: high
+- **描述**: batch_export_users 函数对每个用户的 20 个字段全部调用 _encrypt_field，包括昵称（nickname）、头像 URL（avatar_url）等非敏感字段。对于 1000 条用户数据，这导致 20000 次加密操作。昵称和头像 URL 通常不是 PII（个人身份信息），加密它们不仅浪费 CPU，还会导致后续查询无法使用这些字段进行索引或模糊匹配。
+- **建议**: 只对真正的 PII 字段进行加密：手机号、身份证号、银行卡号。昵称、头像 URL 等非敏感字段无需加密。address 字段视业务需求决定（如果包含详细地址则加密，如果只是城市级别则可不加密）。优化后加密次数从 20000 次降至 3000-4000 次，性能提升 5-6 倍。
+
+### 案例 16
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:64-80
+- **严重程度**: medium
+- **描述**: batch_export_users 函数对用户的所有字段都进行了加密，包括 nickname（昵称）和 avatar_url（头像URL）等非敏感字段。这些字段不包含个人身份信息（PII），加密它们不仅浪费计算资源（每批 1000 条 × 20 字段 = 20000 次加密操作），还增加了后续解密和搜索的复杂度。address（地址）字段是否加密存在争议，取决于业务场景。
+- **建议**: 仅对 PII 敏感字段进行加密：手机号、身份证号、银行卡号。昵称和头像URL 不需要加密。地址字段建议根据数据分类标准决定：如果地址包含具体门牌号则加密，仅城市级别则不加密。修改为：user["phone"] = _encrypt_field(user["phone"]); user["id_card"] = _encrypt_field(user["id_card"]); 移除 nickname 和 avatar_url 的加密。
+
+### 案例 17
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:100-115
+- **严重程度**: medium
+- **描述**: 在 get_users_orders 函数中，orders.extend(cursor.fetchall()) 在每次循环中都会扩展列表。对于大量数据，多次 extend 会导致列表多次重新分配内存。虽然这不是最严重的性能问题，但在大数据量下会有影响。
+- **建议**: 使用列表推导式或 itertools.chain 一次性收集所有结果：all_orders = list(itertools.chain.from_iterable(cursor.fetchall() for _ in usernames))。或者使用批量查询后直接返回结果。

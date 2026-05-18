@@ -51,14 +51,3 @@ def compute_similarity(text_a: str, text_b: str) -> Optional[float]:
         return float(np.dot(emb_a, emb_b) / (np.linalg.norm(emb_a) * np.linalg.norm(emb_b)))
     except Exception:
         return None
-
-
-def are_suggestions_contradictory(fix_a: str, fix_b: str) -> Optional[bool]:
-    sim = compute_similarity(fix_a, fix_b)
-    if sim is None:
-        return None
-    if sim > 0.7:
-        return False
-    if sim < 0.3:
-        return True
-    return None

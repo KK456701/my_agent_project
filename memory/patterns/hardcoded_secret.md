@@ -6,7 +6,7 @@
 ## 标准修复
 将密钥移至环境变量或安全的密钥管理服务中，例如：SECRET_KEY = os.environ.get('SECRET_KEY')。如果密钥必须存储在代码中，应使用配置文件并确保其不被提交到版本控制系统。
 
-## 审查次数: 41
+## 审查次数: 45
 
 ## 历史案例
 
@@ -340,3 +340,35 @@
 - **严重程度**: low
 - **描述**: ENCRYPTION_KEY 和 IV 被硬编码在源代码中，攻击者可以通过访问源代码获取密钥，解密所有加密数据。
 - **建议**: 将密钥移至环境变量或密钥管理服务（如 AWS KMS、HashiCorp Vault），IV 应为随机生成并随密文一起存储。
+
+### 案例 42
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:38-44
+- **严重程度**: high
+- **描述**: verify_password_high_traffic 函数使用 hashlib.sha256() 对密码进行哈希，且盐值 SALT 是硬编码的固定值。SHA256 是快速哈希函数，专为计算效率设计，对 GPU/ASIC 暴力破解抵抗力极弱。固定盐值意味着所有用户使用相同的盐，彩虹表攻击可以一次性破解所有密码。该函数注释明确说明这是高并发登录接口（每秒数千次），但安全风险远高于性能收益。
+- **建议**: 使用 bcrypt 或 argon2 等专用密码哈希算法。对于高并发场景，可以适当降低 bcrypt 的 cost 值（如从 12 降到 8-10），或使用 argon2 并调整内存/时间参数。修改为：import bcrypt; computed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=8))。注意：存储时需保存完整的 hash 输出（包含盐值），验证时使用 bcrypt.checkpw()。
+
+### 案例 43
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:62
+- **严重程度**: high
+- **描述**: ENCRYPTION_KEY 被硬编码为字符串 'hardcoded-key-1234'。攻击者通过源代码泄露即可获取此密钥，进而解密所有用户敏感数据。这是严重的安全隐患，违反了密钥管理的黄金法则。
+- **建议**: 将密钥移至环境变量或安全的密钥管理服务（如 AWS KMS、HashiCorp Vault）。修改为：ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')。如果必须使用配置文件，确保 .gitignore 排除该文件。
+
+### 案例 44
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:31-42
+- **严重程度**: high
+- **描述**: 在高并发登录场景下，当前使用 SHA256 + 固定盐值进行密码哈希。虽然单次计算 < 1ms 性能极佳，但 SHA256 是通用哈希函数，设计上不是抗暴力破解的。攻击者可以使用 GPU 以每秒数十亿次的速度进行离线破解。固定盐值（SALT = 'company-wide-salt-2024'）进一步降低了安全性。这是一个典型的安全与性能的 trade-off：SHA256 快但不安全，bcryp
+- **建议**: 使用 bcrypt 或 argon2 进行密码哈希。对于高并发场景，可以：1) 降低 bcrypt 的 cost factor（如从 12 降到 8-10），使单次哈希在 10-50ms 左右；2) 引入本地缓存（如 LRU cache）缓存最近验证成功的用户哈希结果，减少重复计算；3) 使用异步方式处理密码验证，避免阻塞事件循环。示例：import bcrypt; bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=10))
+
+### 案例 45
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:63-80
+- **严重程度**: medium
+- **描述**: ENCRYPTION_KEY = 'hardcoded-key-1234' 被硬编码在源代码中。虽然这是性能问题，但硬编码密钥会导致：1) 密钥泄露风险（代码被提交到版本控制）；2) 密钥轮换困难（需要修改代码重新部署）；3) 所有环境使用相同密钥。
+- **建议**: 将加密密钥移至环境变量或密钥管理服务（如 AWS KMS、HashiCorp Vault）。示例：ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')。如果必须使用固定密钥，应确保密钥文件不被提交到版本控制系统。

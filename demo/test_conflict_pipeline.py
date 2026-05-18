@@ -68,24 +68,24 @@ FINDINGS = {
 
 async def main():
     print("=" * 60)
-    print("🔴 冲突检测测试（预制矛盾 findings）")
+    print("冲突检测测试（预制矛盾 findings）")
     print("=" * 60)
 
     # ── Step 1: 冲突检测 ──
     adversarial = detect_conflicts(FINDINGS)
     orth = detect_conflicts._last_orthogonal
 
-    print(f"\n📊 检测结果:")
+    print(f"\n检测结果:")
     print(f"   输入: {sum(len(v) for v in FINDINGS.values())} 个 findings")
     print(f"   对抗性冲突: {len(adversarial)}")
     print(f"   正交发现:   {len(orth)}")
 
     if not adversarial:
-        print("\n❌ 没有检测到对抗性冲突！")
+        print("\n[FAIL] 没有检测到对抗性冲突！")
         print("   预期: 3 对 (缓存 / 密码哈希 / SQL参数化)")
         return
 
-    print(f"\n🔴 对抗性冲突详情:")
+    print(f"\n对抗性冲突详情:")
     for c in adversarial:
         print(f"   {c['domain_a']} vs {c['domain_b']} — {c['file']} ({c['lines']})")
         print(f"   adversarial={c['adversarial']}")
@@ -93,7 +93,7 @@ async def main():
 
     # ── Step 2: 辩论裁决 ──
     print("=" * 60)
-    print("⚔️ Consensus 裁决")
+    print("Consensus 裁决")
     print("=" * 60)
 
     consensus = ConsensusAgent()
@@ -119,7 +119,7 @@ async def main():
 
             if resolution == "stalemate":
                 if round_num >= 3:
-                    print(f"   → 🔺 3 轮僵局，升级人工")
+                    print(f"   -> 3 轮僵局，升级人工")
                     break
                 print(f"   → 未达成共识，进入下一轮...")
             else:
@@ -127,7 +127,7 @@ async def main():
                 break
 
     print("\n" + "=" * 60)
-    print("✅ 测试完成")
+    print("[OK] 测试完成")
 
 
 if __name__ == "__main__":

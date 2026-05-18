@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 41
+## 审查次数: 43
 
 ## 历史案例
 
@@ -340,3 +340,19 @@
 - **严重程度**: medium
 - **描述**: create_order 函数在 API Gateway 已做输入校验后，再次执行类型、长度、SQL 注入、XSS 等校验。根据描述，50% 的请求处理时间花在重复校验上。对于 3000 QPS 的峰值，这是显著的 CPU 浪费。
 - **建议**: 1. 信任 API Gateway 的校验结果，移除应用层重复校验，仅在关键路径保留必要校验（如业务规则校验）。2. 如果深度防御是硬性要求，将校验逻辑移至中间件层统一处理，避免每个业务函数重复实现。3. 使用缓存校验结果（如对同一请求的校验结果做 memoization），减少重复计算。
+
+### 案例 42
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:107-114
+- **严重程度**: info
+- **描述**: get_users_orders 函数中，username 变量通过 f-string 直接拼接到 SQL 查询字符串中。攻击者可以构造恶意的 username 参数，例如 "' OR '1'='1"，导致查询所有用户的订单数据，造成数据泄露。这是最经典的 SQL 注入漏洞，严重程度为 critical。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM orders WHERE username = ?", (name,))。注意：参数化查询后，username 中的特殊字符会被自动转义，无需手动过滤。
+
+### 案例 43
+- **日期**: 2026-05-18_113651
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:100-115
+- **严重程度**: critical
+- **描述**: get_users_orders 函数同时存在两个严重问题：1) SQL 注入：username 通过 f-string 直接拼接到 SQL 查询中，攻击者可以构造恶意 username 参数执行任意 SQL；2) N+1 查询：在 for 循环内逐条执行数据库查询，对于 1000 个用户名，会产生 1001 次数据库往返。这两个问题在同一行代码上（query = f"SELECT * FROM
+- **建议**: 同时修复两个问题：使用参数化查询 + IN 子句批量查询。示例：placeholders = ','.join(['?'] * len(usernames)); cursor.execute(f"SELECT * FROM orders WHERE username IN ({placeholders})", usernames)。这样既防止了 SQL 注入（参数化查询），又将 N+1 次查询降为 1 次（批量查询）。注意：IN 子句的参数化在 SQLite 中支持，但在某些数据库（如 MySQL）中需要注意参数数量限制。

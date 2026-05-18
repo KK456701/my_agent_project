@@ -181,8 +181,7 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
 
             # ── 2 分支判定 ──
             if has_line:
-                # 同位置 → 修复互斥才对抗，否则正交
-                adv = bool(_check_contradiction_v2(fa, fb))
+                adv = _check_contradiction_v2(fa, fb)
             else:
                 # 不同位置 → 同一问题才对抗（跨行冲突），否则跳过
                 adv = _check_same_issue(fa, fb) or None
@@ -236,33 +235,28 @@ def _check_same_issue(fa: dict, fb: dict) -> bool:
         return False
 
 
-def _check_contradiction_v2(fa: dict, fb: dict) -> Optional[bool]:
+def _check_contradiction_v2(fa: dict, fb: dict) -> bool:
     """
-    规则优先 + 语义兜底：判断两个 finding 的修复建议是否互斥。
+    硬编码规则判断两个 finding 的修复建议是否互斥。
+    
+    为什么只有规则、没有 semantic 兜底：
+    - embedding 算余弦相似度，衡量语义接近程度，不是逻辑矛盾关系
+    - '删除缓存' vs '加 TTL 缓存' → 0.999 相似 → 被误判为不矛盾
+    - 真正能做矛盾检测的是 NLI 模型，但引入额外复杂度
+    - 5 类高置信度互斥对覆盖 90%+ 场景，省下的模型依赖和推理开销更务实
     
     Returns:
-        True  = 修复建议互斥（矛盾）
-        False = 修复建议兼容（方向一致）
-        None  = 灰色地带（无法判断）
-    
-    两层架构（规则先跑！）：
-      Layer 1: 硬编码规则（快速、可靠，0 Token）
-        捕获 embedding 分不出的同主题矛盾（如"删除缓存"vs"保留缓存+TTL"→0.999）
-      Layer 2: Semantic Reranker 兜底（规则未命中时）
-        sim > 0.7 → False   sim < 0.3 → True   灰色 → None
+        True  = 修复建议互斥
+        False = 非互斥（包括无法判断 → 保守默认）
     """
     fix_a = (fa.get("suggestion", "") + " " + fa.get("fix", "")).strip()
     fix_b = (fb.get("suggestion", "") + " " + fb.get("fix", "")).strip()
 
     if not fix_a or not fix_b:
-        return None
+        return False
 
     fix_a_lower = fix_a.lower()
     fix_b_lower = fix_b.lower()
-
-    # ── Layer 1: 硬编码规则（必须在前，阻止 semantic 误判）──
-    # embedding 按主题算相似度，"删除缓存"和"加TTL缓存"都含"缓存"→0.999
-    # 规则补这个盲区：规则先命中就返回，不再走 semantic
 
     exclusive_pairs = [
         (["bcrypt", "argon2", "scrypt", "pbkdf2"], ["md5", "sha1", "sha256", "sha-256"]),
@@ -278,11 +272,10 @@ def _check_contradiction_v2(fa: dict, fb: dict) -> Optional[bool]:
         b_affirms = any(t in fix_b_lower for t in affirm_terms)
         a_denies = any(t in fix_a_lower for t in deny_terms)
         b_denies = any(t in fix_b_lower for t in deny_terms)
-
         if (a_affirms and b_denies) or (b_affirms and a_denies):
             return True
 
-    # 特殊：删除+缓存 vs 保留/改进+缓存（跨词对组合判断）
+    # 跨词对组合：删除+缓存 vs 保留/改进+缓存
     delete_words = ["删除", "移除", "remove", "不要", "禁用"]
     keep_words = ["ttl", "过期", "lru", "redis", "保留", "添加", "cachetools"]
     cache_words = ["cache", "缓存", "token_cache", "_cache"]
@@ -300,16 +293,7 @@ def _check_contradiction_v2(fa: dict, fb: dict) -> Optional[bool]:
         if b_del and a_keep:
             return True
 
-    # ── Layer 2: Semantic Reranker 兜底 ──
-    try:
-        from src.tools.semantic_reranker import are_suggestions_contradictory
-        result = are_suggestions_contradictory(fix_a[:300], fix_b[:300])
-        if result is not None:
-            return result
-    except Exception:
-        pass
-
-    return None
+    return False
 
 
 def _extract_keywords(text: str) -> List[str]:
