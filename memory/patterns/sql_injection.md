@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 39
+## 审查次数: 41
 
 ## 历史案例
 
@@ -324,3 +324,19 @@
 - **严重程度**: medium
 - **描述**: 循环内每次调用 db.execute() 插入一条记录，对于 10000 条数据需要 10000 次数据库往返，网络延迟和事务开销巨大。
 - **建议**: 收集所有加密后的数据，使用 executemany() 或批量 INSERT 语句一次提交：db.executemany("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", [(u['id'], enc.hex()) for u, enc in zip(users, encrypted_data)])
+
+### 案例 40
+- **日期**: 2026-05-18_105740
+- **来源 PR**: stalemate_test.py
+- **文件**: stalemate_test.py:87-97
+- **严重程度**: medium
+- **描述**: create_order 函数在 API Gateway 已做完整校验的情况下，再次执行相同的校验逻辑（类型、长度、SQL 注入、XSS）。虽然深度防御是安全最佳实践，但这里的问题在于：1) 校验逻辑完全重复，没有增加新的安全价值；2) 消耗了 50% 的请求处理时间。
+- **建议**: 优化深度防御策略：1) 应用层只校验 Gateway 无法校验的业务规则（如库存检查、价格计算）；2) 对 Gateway 已校验的字段使用轻量级校验（如类型检查），跳过重复的注入检测；3) 使用缓存或预编译的正则表达式减少校验开销；4) 考虑将校验逻辑下沉到 API Gateway 层，应用层只做业务校验。
+
+### 案例 41
+- **日期**: 2026-05-18_105740
+- **来源 PR**: stalemate_test.py
+- **文件**: stalemate_test.py:93-100
+- **严重程度**: medium
+- **描述**: create_order 函数在 API Gateway 已做输入校验后，再次执行类型、长度、SQL 注入、XSS 等校验。根据描述，50% 的请求处理时间花在重复校验上。对于 3000 QPS 的峰值，这是显著的 CPU 浪费。
+- **建议**: 1. 信任 API Gateway 的校验结果，移除应用层重复校验，仅在关键路径保留必要校验（如业务规则校验）。2. 如果深度防御是硬性要求，将校验逻辑移至中间件层统一处理，避免每个业务函数重复实现。3. 使用缓存校验结果（如对同一请求的校验结果做 memoization），减少重复计算。

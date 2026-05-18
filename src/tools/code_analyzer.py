@@ -144,16 +144,14 @@ def extract_code_snippet(diff_text: str, file_path: str, line_start: int, line_e
 
 def detect_conflicts(findings_by_domain: dict) -> List[dict]:
     """
-    检测需要辩论的对抗性冲突，正交发现不上报。
+    检测需要辩论的对抗性冲突。
+
+    简化流程（2 分支）：
+      同位置(line overlap) → 看修复是否互斥
+      不同位置              → 看是否同一问题（跨行冲突）
     
-    新流程（4步递进）：
-      Step 1: 同一问题？（描述语义相似度 > 0.85）
-      Step 1.5: 同一问题 → 修复互斥？→ 对抗 / 正交
-      Step 2: 不同问题 → 修复互斥？（跨行语义冲突）→ 对抗
-      Step 3: 行号重叠 → _is_meaningful_conflict_v2 规则判断
-      Step 4: 同文件不同行 → _global_semantic_check 兜底
-    
-    核心原则：修复互斥是主判据，位置/语义是辅助信号。
+    核心原则：位置信号前置，修复互斥是主判据。
+    灰色地带默认保守（不辩论），宁漏勿滥。
     """
     all_findings = []
     for domain, findings in findings_by_domain.items():
@@ -171,53 +169,25 @@ def detect_conflicts(findings_by_domain: dict) -> List[dict]:
                 continue
             if (min(i, j), max(i, j)) in seen:
                 continue
-
-            # 不同文件 → 跳过
             if fa.get("file") != fb.get("file"):
                 continue
 
-            # ── 计算位置关系 ──
+            # ── 位置关系 ──
             la_s, la_e = _parse_line_range(fa.get("lines", "0-0"))
             lb_s, lb_e = _parse_line_range(fb.get("lines", "0-0"))
             lap = max(0, min(la_e, lb_e) - max(la_s, lb_s))
             close = abs(la_s - lb_s) <= 5 if la_s >= 0 and lb_s >= 0 else False
             has_line = lap > 0 or close
 
-            # ── 并行计算三个信号 ──
-            is_contra = _check_contradiction_v2(fa, fb)  # True/False/None
-            same_issue = _check_same_issue(fa, fb)        # True/False
-
-            # ── 融合判定矩阵 ──
-            adv = None  # None = 跳过此对
-
-            if is_contra is True:
-                # 修复建议互斥 → 对抗（无论位置/语义）
-                adv = True
-            elif is_contra is False:
-                # 修复建议不互斥
-                if same_issue and has_line:
-                    adv = False  # 同一问题 + 同一位置 + 修复兼容 → 正交
-                else:
-                    continue   # 不同问题或无位置重叠 → 跳过
-            else:  # is_contra is None（灰色地带）
-                if same_issue:
-                    if has_line:
-                        adv = False  # 同一问题 + 同一位置 → 保守：正交
-                    else:
-                        adv = True   # 同一问题 + 不同位置 → 跨行冲突
-                elif has_line:
-                    # 不同问题 + 行号重叠 → 规则兜底
-                    adv = _is_meaningful_conflict_v2(fa, fb, da, db)
-                    if adv is False:
-                        adv = None  # 规则判无关 → 跳过
-                else:
-                    # 不同问题 + 不同位置 → 全局语义兜底
-                    adv = _global_semantic_check(fa, fb)
-                    if adv is None:
-                        continue
-
-            if adv is None:
-                continue
+            # ── 2 分支判定 ──
+            if has_line:
+                # 同位置 → 修复互斥才对抗，否则正交
+                adv = bool(_check_contradiction_v2(fa, fb))
+            else:
+                # 不同位置 → 同一问题才对抗（跨行冲突），否则跳过
+                adv = _check_same_issue(fa, fb) or None
+                if adv is False:
+                    continue  # 不同位置 + 不同问题 → 跳过
 
             seen.add((min(i, j), max(i, j)))
             conflict_id += 1
@@ -342,58 +312,6 @@ def _check_contradiction_v2(fa: dict, fb: dict) -> Optional[bool]:
     return None
 
 
-def _is_meaningful_conflict_v2(
-    fa: dict, fb: dict, domain_a: str, domain_b: str
-) -> bool:
-    """
-    行号重叠 + 不同问题 + 修复灰色地带 → 判断是否构成有意义的冲突。
-    
-    修复点：
-    - 去掉盲判规则（原规则B sec+perf都high直接判对抗）
-    - 默认值改为 False（保守，不过度送辩论）
-    """
-
-    # 规则 1: severity 差距 ≥ 2 级 → 一方可能严重误判
-    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    rank_a = sev_order.get(fa.get("severity", "info").lower(), 4)
-    rank_b = sev_order.get(fb.get("severity", "info").lower(), 4)
-    if abs(rank_a - rank_b) >= 2:
-        return True
-
-    # 规则 2: 标题关键词交集
-    title_a = set(_extract_keywords(fa.get("title", "")))
-    title_b = set(_extract_keywords(fb.get("title", "")))
-    overlap = title_a & title_b
-
-    if len(overlap) == 0:
-        return False  # 完全无关话题
-
-    # 规则 3: security + performance 都 high/critical + 关键词交集 ≥ 2
-    # （加了交集约束，不再盲判）
-    if {domain_a, domain_b} == {"security", "performance"}:
-        sev_a = fa.get("severity", "").lower()
-        sev_b = fb.get("severity", "").lower()
-        if sev_a in ("critical", "high") and sev_b in ("critical", "high") and len(overlap) >= 2:
-            return True
-
-    # 规则 4: semantic reranker 兜底
-    fix_a = fa.get("suggestion", fa.get("fix", ""))
-    fix_b = fb.get("suggestion", fb.get("fix", ""))
-    if fix_a and fix_b:
-        try:
-            from src.tools.semantic_reranker import are_suggestions_contradictory
-            result = are_suggestions_contradictory(fix_a[:300], fix_b[:300])
-            if result is True:
-                return True
-            if result is False:
-                return False
-        except Exception:
-            pass
-
-    # 默认：保守 → 不送辩论
-    return False
-
-
 def _extract_keywords(text: str) -> List[str]:
     """从文本中提取关键词（中文按字符，英文按单词）"""
     words = set()
@@ -405,22 +323,6 @@ def _extract_keywords(text: str) -> List[str]:
     for c in chinese:
         words.add(c)
     return list(words)
-
-
-def _global_semantic_check(fa: dict, fb: dict) -> Optional[bool]:
-    fix_a = fa.get('suggestion', fa.get('fix', ''))
-    fix_b = fb.get('suggestion', fb.get('fix', ''))
-    if not fix_a or not fix_b:
-        return None
-    ta = set(_extract_keywords(fa.get('title', '')))
-    tb = set(_extract_keywords(fb.get('title', '')))
-    if ta and tb and not (ta & tb):
-        return None
-    try:
-        from src.tools.semantic_reranker import are_suggestions_contradictory
-        return are_suggestions_contradictory(fix_a[:300], fix_b[:300])
-    except Exception:
-        return None
 
 
 def _parse_line_range(lines_str: str) -> Tuple[int, int]:
