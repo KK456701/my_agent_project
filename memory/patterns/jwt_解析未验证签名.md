@@ -6,7 +6,7 @@
 ## 标准修复
 使用成熟的 JWT 库（如 PyJWT）来解析和验证 Token。例如：payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])。库会自动处理签名验证、过期时间检查等。
 
-## 审查次数: 2
+## 审查次数: 3
 
 ## 历史案例
 
@@ -28,3 +28,11 @@
 - **严重程度**: high
 - **描述**: auth_require_permission 装饰器中，JWT Token 仅通过 split 和 base64 解码解析，没有验证签名。攻击者可以伪造任意 JWT Token，绕过身份验证。
 - **建议**: 使用成熟的 JWT 库（如 PyJWT）进行解析和验证。例如：import jwt; payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+
+### 案例 3
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:196-210
+- **严重程度**: high
+- **描述**: auth_require_permission 装饰器中，JWT 的 payload 仅通过 base64 解码直接解析，完全没有验证签名。攻击者可以伪造任意 JWT Token，绕过认证和权限检查。后续的 HMAC 计算虽然存在，但结果未被用于任何验证，形同虚设。
+- **建议**: 使用成熟的 JWT 库（如 PyJWT）进行签名验证。修改为：import jwt; payload = jwt.decode(token, secret, algorithms=['HS256'])

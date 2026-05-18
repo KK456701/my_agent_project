@@ -197,29 +197,46 @@ def _extract_and_update_patterns(report: str, pr_diff: str, title: str, timestam
     """
     从报告中提取 finding，更新对应模式文件
     
-    策略：用正则从报告的 "### 🔴/🟠/🟡/🟢/ℹ️ 标题" 格式中提取
+    适配实际报告格式：
+      ## 🔴 Critical
+      ### finding标题
+      - **位置**: `file`:lines | ...
+      - **描述**: ...
+      - **修复**: ...
     """
-    # 匹配报告中的 finding 标题
+    severity_map = {"🔴": "critical", "🟠": "high", "🟡": "medium", "🟢": "low", "ℹ️": "info"}
+    
+    # 先找所有 section header 确定每个 finding 的 severity
+    section_pattern = re.compile(r'## (🔴|🟠|🟡|🟢|ℹ️) (\w+)')
+    sections = list(section_pattern.finditer(report))
+    
+    # 找所有 finding: ### title\n- **位置**: `file`:lines | ...\n- **描述**: ...\n- **修复**: ...
     finding_pattern = re.compile(
-        r'### (🔴|🟠|🟡|🟢|ℹ️) (.+?)\n'
-        r'- \*\*文件\*\*: `(.+?)`\n'
-        r'- \*\*行号\*\*: (.+?)\n'
-        r'- \*\*严重程度\*\*: (.+?)\n'
+        r'### (.+?)\n'
+        r'- \*\*位置\*\*: `(.+?)`:([\d\-]+) \|.*?\n'
         r'- \*\*描述\*\*: (.+?)\n'
-        r'- \*\*建议\*\*: (.+?)\n',
+        r'- \*\*修复\*\*: (.+?)(?=\n\n|\n###|\n---|\n##|\Z)',
         re.DOTALL
     )
-
+    
     findings = []
     for match in finding_pattern.finditer(report):
+        pos = match.start()
+        # 找这个 finding 属于哪个 severity section
+        sev = "info"
+        for s in reversed(sections):
+            if s.start() < pos:
+                sev = severity_map.get(s.group(1), "info")
+                break
+        
         findings.append({
-            "severity_emoji": match.group(1),
-            "title": match.group(2).strip(),
-            "file": match.group(3).strip(),
-            "lines": match.group(4).strip(),
-            "severity": match.group(5).strip(),
-            "description": match.group(6).strip().replace("\n", " "),
-            "suggestion": match.group(7).strip().replace("\n", " "),
+            "severity_emoji": sev,
+            "title": match.group(1).strip(),
+            "file": match.group(2).strip(),
+            "lines": match.group(3).strip(),
+            "severity": sev,
+            "description": match.group(4).strip().replace("\n", " "),
+            "suggestion": match.group(5).strip().replace("\n", " "),
         })
 
     # 按关键词将 finding 归类到模式文件
@@ -334,3 +351,21 @@ def get_memory_stats() -> dict:
         "pattern_files": len(patterns),
         "total_cases": total_cases,
     }
+
+
+def _slugify(text: str) -> str:
+    """把中文标题转为安全的文件名片段"""
+    import unicodedata
+    # 替换特殊字符为下划线
+    result = []
+    for ch in text:
+        if ch.isalnum() or ch in "_-":
+            result.append(ch)
+        elif ch == " ":
+            result.append("_")
+        else:
+            result.append("_")
+    slug = "".join(result)
+    # 压缩连续下划线
+    slug = re.sub(r'_+', '_', slug).strip('_').lower()
+    return slug[:50] if slug else "unknown"

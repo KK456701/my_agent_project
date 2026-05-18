@@ -105,8 +105,8 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
         save_review_to_memory(report, diff_text, title)
         stats = get_memory_stats()
         console.print(f"[dim]🧠 记忆库: {stats['pattern_files']} 个模式 / {stats['total_cases']} 个案例[/]")
-    except Exception:
-        pass  # 记忆归档失败不影响主流程
+    except Exception as e:
+        console.print(f"[yellow]⚠️ 记忆归档失败: {e}[/]")
 
     return report
 

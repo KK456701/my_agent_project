@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 16
+## 审查次数: 26
 
 ## 历史案例
 
@@ -140,3 +140,83 @@
 - **严重程度**: high
 - **描述**: get_config_with_cache 函数使用全局字典 _CONFIG_CACHE 作为缓存，存在以下架构问题：1) 无 TTL 和淘汰策略，导致内存泄漏；2) 线程不安全；3) 缓存中可能存储敏感配置（如 API Key），无访问控制；4) 存在 SQL 注入漏洞。
 - **建议**: 1) 使用带 TTL 的线程安全缓存，如 cachetools.TTLCache。2) 对敏感配置进行加密存储或使用专门的配置服务。3) 使用参数化查询修复 SQL 注入。4) 考虑使用 Redis 等外部缓存服务，便于集中管理和过期。
+
+### 案例 17
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:73
+- **严重程度**: info
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 18
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:261
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 19
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:295
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 20
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:68-79
+- **严重程度**: critical
+- **描述**: 在 get_user_orders_n_plus_1 函数中，对 user_ids 列表中的每个 user_id 都执行一次独立的 SQL 查询。如果 user_ids 有 1000 个元素，就会产生 1000 次数据库往返（N+1 次查询），而实际上只需要 1 次查询即可。这会导致严重的性能瓶颈，尤其是在高并发场景下。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单，将 N+1 次查询降为 1 次。修改为：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)
+
+### 案例 21
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:73
+- **严重程度**: info
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 22
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:261
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 23
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:295
+- **严重程度**: critical
+- **描述**: Skills 规则命中: execute\(f"
+- **建议**: 使用参数化查询: cursor.execute('SELECT ... WHERE x = ?', (val,))
+
+### 案例 24
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:68-79
+- **严重程度**: critical
+- **描述**: 在 get_user_orders_n_plus_1 函数中，对 user_ids 列表中的每个 user_id 都执行一次独立的 SQL 查询。如果 user_ids 有 1000 个元素，就会产生 1000 次数据库往返（N+1 次查询），而实际上只需要 1 次查询即可。这会导致严重的性能瓶颈，尤其是在高并发场景下。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单，将 N+1 次查询降为 1 次。修改为：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)
+
+### 案例 25
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:68-79
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环结束后才关闭数据库连接，但如果循环中发生异常（如 SQL 执行失败），conn.close() 将不会执行，导致数据库连接泄漏。长期运行会耗尽连接池资源。
+- **建议**: 使用 try-finally 或 with 语句确保连接始终被关闭。修改为：conn = get_db(); try: ... finally: conn.close()
+
+### 案例 26
+- **日期**: 2026-05-18
+- **来源 PR**: test
+- **文件**: demo/sample_pr.py:128-155
+- **严重程度**: medium
+- **描述**: sanitize_user_input_batch 函数同时处理了XSS过滤、字符清洗、SQL关键字过滤三种不同安全策略，且正则表达式硬编码在函数内部。这违反了单一职责和开闭原则：添加新的清洗规则需要修改函数本身，且无法复用单个清洗策略。
+- **建议**: 1) 将清洗策略拆分为独立的函数/类：remove_xss()、sanitize_special_chars()、prevent_sql_injection()。2) 使用策略模式或责任链模式组合清洗规则。3) 将正则表达式提取为模块级常量或配置。
