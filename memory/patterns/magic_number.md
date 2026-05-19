@@ -6,7 +6,7 @@
 ## 标准修复
 直接累加，避免中间列表。修改为：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)。将 0.15 定义为常量 TAX_RATE = 0.15。
 
-## 审查次数: 10
+## 审查次数: 12
 
 ## 历史案例
 
@@ -92,3 +92,19 @@
 - **严重程度**: medium
 - **描述**: calculate_order_amount 函数中存在两个架构问题：1) 0.15 是魔法数字，应定义为模块级常量（如 TAX_RATE = 0.15）；2) 不必要的中间列表 prices 增加了内存开销和代码复杂度，可以直接累加。
 - **建议**: 1) 定义常量 TAX_RATE = 0.15；2) 使用 sum() 和生成器表达式简化：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)
+
+### 案例 11
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:93-108
+- **严重程度**: medium
+- **描述**: calculate_order_amount 函数中使用了魔法数字 0.15（税率），且创建了不必要的中间列表 prices。这降低了代码的可读性和可维护性，且违反了 DRY 原则。
+- **建议**: 1. 将 0.15 定义为模块级常量 TAX_RATE = 0.15。2. 使用 sum() 和生成器表达式简化计算：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)
+
+### 案例 12
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:82-96
+- **严重程度**: medium
+- **描述**: calculate_order_amount 函数中存在两个架构问题：1) 0.15 是魔法数字，应定义为常量；2) 创建了不必要的中间列表 prices，可以直接累加。
+- **建议**: 1) 定义模块级常量 TAX_RATE = 0.15。2) 使用 sum() 和生成器表达式简化：total = sum(item['price'] * item['quantity'] * TAX_RATE for item in items)。

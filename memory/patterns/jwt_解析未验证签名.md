@@ -6,7 +6,7 @@
 ## 标准修复
 使用成熟的 JWT 库（如 PyJWT）来解析和验证 Token。例如：payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])。库会自动处理签名验证、过期时间检查等。
 
-## 审查次数: 8
+## 审查次数: 10
 
 ## 历史案例
 
@@ -76,3 +76,19 @@
 - **严重程度**: critical
 - **描述**: 装饰器中直接使用 split 解析 JWT 的 payload，但没有验证签名。攻击者可以伪造任意 JWT Token，完全绕过认证。
 - **建议**: 使用 PyJWT 库进行完整的 JWT 验证：import jwt; payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])。不要手动解析 JWT。
+
+### 案例 9
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:194-199
+- **严重程度**: high
+- **描述**: auth_require_permission 装饰器中，JWT Token 的解析仅通过 base64 解码 payload 部分，没有验证签名。攻击者可以伪造任意 JWT Token，从而绕过认证和权限检查。
+- **建议**: 使用成熟的 JWT 库（如 PyJWT）进行 Token 验证：payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])。不要手动解析 JWT。
+
+### 案例 10
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:128-155
+- **严重程度**: high
+- **描述**: 在 auth_require_permission 装饰器中，JWT Token 仅通过 split 分割后 base64 解码 payload，完全没有验证签名。攻击者可以伪造任意 JWT Token，绕过认证和权限检查。后续的 HMAC 计算也没有与任何期望值进行比较，形同虚设。
+- **建议**: 使用成熟的 JWT 库（如 PyJWT）进行完整的签名验证： ```python import jwt

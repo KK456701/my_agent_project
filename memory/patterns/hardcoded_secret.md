@@ -6,7 +6,7 @@
 ## 标准修复
 将密钥移至环境变量或安全的密钥管理服务中，例如：SECRET_KEY = os.environ.get('SECRET_KEY')。如果密钥必须存储在代码中，应使用配置文件并确保其不被提交到版本控制系统。
 
-## 审查次数: 94
+## 审查次数: 102
 
 ## 历史案例
 
@@ -764,3 +764,67 @@
 - **严重程度**: medium
 - **描述**: login_user 函数同时负责数据库查询、密码验证和用户信息组装，违反了单一职责原则。这导致代码难以测试（需要 mock 数据库）、难以扩展（如添加 OAuth 认证）。
 - **建议**: 将认证逻辑拆分为独立层：1) UserRepository 负责数据库操作；2) AuthService 负责密码验证和 Token 生成；3) 通过依赖注入传递数据库连接。
+
+### 案例 95
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:237-238
+- **严重程度**: critical
+- **描述**: ENCRYPTION_KEY 和 ENCRYPTION_IV 被硬编码在源代码中。攻击者一旦获取代码即可解密所有加密数据。同时，使用固定的 IV 违反了加密最佳实践，降低了 AES-CBC 模式的安全性。
+- **建议**: 1. 将加密密钥移至环境变量或密钥管理服务。2. 为每条记录生成随机的 IV，并将其与密文一起存储。3. 考虑使用更高级的加密模式（如 AES-GCM）提供认证加密。
+
+### 案例 96
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:248-275
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在 for 循环内每次迭代都创建新的 AES cipher 对象（AES.new()）。对于 10000 条记录，将创建 10000 个 cipher 对象，每次初始化都涉及密钥扩展等 CPU 密集型操作。实际上，使用相同的密钥和 IV 可以复用同一个 cipher 对象。
+- **建议**: 将 cipher 创建移到循环外部，复用同一个 cipher 对象。注意：CBC 模式下需要处理 IV 的更新，但可以每次重置 IV 或使用 CTR 等不需要 padding 的模式。
+
+### 案例 97
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:47-49
+- **严重程度**: high
+- **描述**: 密码以明文形式从数据库取出并与用户输入直接比较。这违反了密码存储的基本安全原则。攻击者一旦获取数据库访问权限，即可获取所有用户的明文密码。同时，认证逻辑与数据库操作高度耦合，违反了单一职责原则。
+- **建议**: 1. 使用 bcrypt 或 argon2 等安全的密码哈希算法存储密码。2. 将密码验证逻辑封装为独立的服务或函数，与数据库访问层分离。例如：if verify_password(password, stored_hash):
+
+### 案例 98
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:114-127
+- **严重程度**: high
+- **描述**: hash_password 函数使用 MD5 算法进行密码哈希。MD5 已被证明存在碰撞攻击风险，不适合用于密码存储。这违反了密码存储的安全最佳实践。
+- **建议**: 使用 bcrypt 或 argon2 等专门用于密码哈希的算法。例如：import bcrypt; hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+### 案例 99
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:24-27
+- **严重程度**: critical
+- **描述**: SECRET_KEY 和 DATABASE_PATH 被硬编码在源代码中。攻击者可以通过访问源代码获取密钥，进而伪造 JWT Token 或解密敏感数据。数据库路径硬编码也降低了部署灵活性。
+- **建议**: 将密钥和配置移至环境变量或安全的配置管理服务。例如：SECRET_KEY = os.environ.get('SECRET_KEY', 'default-fallback')。数据库路径应通过配置文件或环境变量注入。
+
+### 案例 100
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:102-112
+- **严重程度**: critical
+- **描述**: hash_password 函数使用 MD5 算法进行密码哈希。MD5 已被证明存在碰撞攻击，不再安全。攻击者可以快速破解 MD5 哈希值。即使加了盐，MD5 的快速计算特性也使其容易受到暴力破解攻击。
+- **建议**: 使用 bcrypt（推荐）、argon2 或 scrypt 等专门为密码哈希设计的算法。这些算法具有可调的工作因子，可以抵抗暴力破解。例如：hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())。
+
+### 案例 101
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:262-280
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在循环内每次迭代都创建新的 AES cipher 对象（AES.new()）。AES 初始化涉及密钥扩展等计算密集型操作，对于 10000 条记录，将执行 10000 次初始化，导致严重的 CPU 开销。
+- **建议**: 将 cipher 对象的创建移到循环外部，复用同一个 cipher 对象。注意：CBC 模式需要为每条记录使用不同的 IV，但可以复用密钥扩展后的 cipher 对象。修改为：cipher = AES.new(ENCRYPTION_KEY, AES.MODE_CBC); for user in users: cipher = AES.new(ENCRYPTION_KEY, AES.MODE_CBC, os.urandom(16)); ...。更好的做法是使用更快的加密模式（如 GCM）或批量加密。
+
+### 案例 102
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:228-235
+- **严重程度**: medium
+- **描述**: ENCRYPTION_KEY = b'my-32-byte-key!!-this-is-bad!!' 被硬编码在源代码中。任何能够访问源代码的人（包括内部开发人员、版本控制系统泄露、反编译等）都可以解密所有加密数据。
+- **建议**: 从环境变量或密钥管理服务（如 AWS KMS、HashiCorp Vault）读取密钥： ```python import os ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY') if ENCRYPTION_KEY is None:     raise ValueError("ENCRYPTION_KEY environment variable not set") ENCRYPTION_KEY = ENCRYPTION_KEY.encode() ```

@@ -6,7 +6,7 @@
 ## 标准修复
 根据上下文进行更精确的清洗。例如，如果是为了防止 XSS，应使用专门的 HTML 转义库（如 html.escape）而不是直接删除字符。如果是为了防止 SQL 注入，应使用参数化查询，而不是依赖输入清洗。
 
-## 审查次数: 42
+## 审查次数: 46
 
 ## 历史案例
 
@@ -348,3 +348,35 @@
 - **严重程度**: medium
 - **描述**: auth_require_permission 装饰器中使用 time.sleep(0.01) 模拟频率限制。如果该装饰器用于异步 Web 框架（如 FastAPI），time.sleep() 会阻塞整个事件循环，导致所有并发请求等待。即使用于同步框架，sleep 也会阻塞当前线程，降低吞吐量。
 - **建议**: 1. 如果用于异步框架，使用 asyncio.sleep(0.01)。2. 如果用于同步框架，考虑使用令牌桶算法（如 pyrate-limiter）或 Redis 限流，避免使用 sleep。3. 如果只是模拟，移除 sleep 或使用更轻量的计数器。
+
+### 案例 43
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:73-74
+- **严重程度**: medium
+- **描述**: get_user_orders_n_plus_1 函数在循环结束后调用 conn.close()，但如果循环中发生异常，连接将永远不会被关闭，导致数据库连接泄漏。这违反了资源管理的异常安全原则。
+- **建议**: 使用 with 语句或 try/finally 块确保连接被正确关闭。例如：with get_db() as conn: 或 try: ... finally: conn.close()
+
+### 案例 44
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:240-268
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在应用层对每行数据单独进行 AES 加密。这导致：1) 每次循环都创建新的 cipher 对象，性能开销大；2) 手动实现 PKCS7 填充，容易出错；3) 代码复杂度高，难以维护。
+- **建议**: 使用数据库的透明加密（TDE）功能，或使用 ORM 的自动加密功能。如果必须在应用层加密，应使用更高级的加密库（如 cryptography 的 Fernet），它封装了密钥管理、IV 生成和填充逻辑。
+
+### 案例 45
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:108-120
+- **严重程度**: medium
+- **描述**: calculate_order_amount 函数先构建一个 prices 列表，再遍历该列表求和。这浪费了 O(n) 的额外内存，并且多了一次不必要的循环。对于大量 items，这种模式会显著增加内存占用和 CPU 时间。
+- **建议**: 直接在循环中累加 total，省去中间列表。修改为：total = 0; for item in items: total += item['price'] * item['quantity'] * 0.15; return total。或者使用 sum() 生成器表达式：return sum(item['price'] * item['quantity'] * 0.15 for item in items)。
+
+### 案例 46
+- **日期**: 2026-05-19_104435
+- **来源 PR**: stalemate_test.py
+- **文件**: stalemate_test.py:66-76
+- **严重程度**: high
+- **描述**: handle_api_request 在请求处理路径中同步写入审计日志，每请求 500 字节，峰值 5000 QPS 时产生 2.5MB/s 的磁盘写入。同步 I/O 会阻塞事件循环或线程池，导致请求延迟增加，在高并发下可能引发背压和请求超时。
+- **建议**: 1. 使用异步日志写入（如 aiologger）或生产者-消费者模式，将日志写入放入后台线程/进程。2. 使用高性能日志库（如 structlog + 异步处理器）或集中式日志服务（如 ELK、Loki）。3. 如果合规允许，对日志进行采样或压缩后再写入。

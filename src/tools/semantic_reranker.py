@@ -18,7 +18,7 @@ _EMB_MODEL_NAME = "damo/nlp_corom_sentence-embedding_chinese-base"
 _LOCAL_DIR = Path(__file__).parent.parent.parent / ".model_cache"
 
 # ── NLI 模型 ──
-_NLI_MODEL_NAME = "MoritzLaurer/mDeBERTa-v3-base-xnli"  # 多语言 NLI，支持中文
+_NLI_MODEL_NAME = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"  # 多语言 NLI，支持中文
 _NLI_MODEL = None
 _NLI_TOKENIZER = None
 _NLI_SKIPPED = False  # 永久跳过标记（模型下载失败或不可用）
@@ -32,14 +32,14 @@ def _get_nli_model():
         return None, None
     _LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-        local_model_dir = _LOCAL_DIR / _NLI_MODEL_NAME.replace("/", "_")
+        from transformers import DebertaV2ForSequenceClassification, AutoTokenizer
+        local_model_dir = _LOCAL_DIR / _NLI_MODEL_NAME
         if local_model_dir.exists() and (local_model_dir / "pytorch_model.bin").exists():
             model_path = str(local_model_dir)
         else:
             model_path = _NLI_MODEL_NAME
         _NLI_TOKENIZER = AutoTokenizer.from_pretrained(model_path)
-        _NLI_MODEL = AutoModelForSequenceClassification.from_pretrained(model_path)
+        _NLI_MODEL = DebertaV2ForSequenceClassification.from_pretrained(model_path)
         _NLI_MODEL.eval()
         return _NLI_MODEL, _NLI_TOKENIZER
     except Exception:
@@ -87,7 +87,7 @@ def compute_similarity(text_a: str, text_b: str) -> Optional[float]:
 # NLI 矛盾检测
 # ============================================================
 
-_NLI_LABEL_MAP = {"contradiction": 0, "entailment": 1, "neutral": 2}
+_NLI_LABEL_MAP = {"contradiction": 2, "entailment": 0, "neutral": 1}
 
 
 def check_contradiction(fix_a: str, fix_b: str) -> Optional[bool]:

@@ -6,7 +6,7 @@
 ## 标准修复
 使用 pyca/cryptography 库替代。修改为：from cryptography.fernet import Fernet
 
-## 审查次数: 1
+## 审查次数: 2
 
 ## 历史案例
 
@@ -20,3 +20,11 @@
 
 ---
 > 本文件由 Agent 自动维护，后续同类问题会自动追加案例。
+
+### 案例 2
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:228-262
+- **严重程度**: info
+- **描述**: 代码使用 Crypto.Cipher.AES（pyCrypto/pycryptodome 库）。虽然 pycryptodome 仍在维护，但建议考虑使用更现代的 cryptography 库，它提供了更安全的默认值和更简洁的 API。
+- **建议**: 考虑使用 cryptography 库：from cryptography.fernet import Fernet。Fernet 提供了简单且安全的对称加密方案，自动处理密钥派生、IV 生成和认证。

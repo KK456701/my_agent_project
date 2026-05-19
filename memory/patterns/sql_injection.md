@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 81
+## 审查次数: 88
 
 ## 历史案例
 
@@ -660,3 +660,59 @@
 - **严重程度**: high
 - **描述**: get_user_orders_n_plus_1 函数在循环内对每个 user_id 单独执行 SQL 查询，导致 N+1 查询问题。当 user_ids 列表较大时（如 1000 个用户），会产生 1000 次数据库往返，严重影响性能。
 - **建议**: 使用 IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join('?' * len(user_ids))})", user_ids)。同时考虑使用 JOIN 或子查询优化。
+
+### 案例 82
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:68-82
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环内对每个 user_id 单独执行 SQL 查询。当 user_ids 列表有 N 个元素时，会产生 N+1 次数据库查询。这不仅导致严重的性能问题，还表明数据访问层缺乏批量查询的抽象。
+- **建议**: 使用单个 SQL 查询配合 IN 子句替代循环查询：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join('?' * len(user_ids))})", user_ids)。同时，将数据库连接管理封装到上下文管理器或依赖注入中。
+
+### 案例 83
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:248-275
+- **严重程度**: medium
+- **描述**: save_user_data_encrypted 函数在循环内逐条执行 INSERT 语句。对于 10000 条记录，将产生 10000 次数据库往返。每次 INSERT 都涉及 SQL 解析、事务日志写入等开销。
+- **建议**: 使用 executemany() 批量插入：cursor.executemany("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", [(user['id'], encoded) for user in users])。将 10000 次数据库往返降为 1 次。
+
+### 案例 84
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:88-95
+- **严重程度**: critical
+- **描述**: 在 get_user_orders_n_plus_1 函数中，对 user_ids 列表中的每个 user_id 都执行一次独立的 SQL 查询。如果 user_ids 有 1000 个元素，就会产生 1000 次数据库往返（N+1 次查询）。这会导致严重的性能瓶颈，尤其是在用户量大的场景下。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单，将 N+1 次查询降为 2 次（一次查询 + 一次结果处理）。修改为：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)，然后在 Python 中按 user_id 分组。
+
+### 案例 85
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:264
+- **严重程度**: critical
+- **描述**: save_user_data_encrypted 函数中将 user['id'] 直接拼接到 SQL 查询中，存在 SQL 注入风险。攻击者可以构造恶意的 user_id 值执行任意 SQL 命令。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))。
+
+### 案例 86
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:55-56
+- **严重程度**: high
+- **描述**: login_user 函数内部直接调用 get_db() 获取数据库连接，导致认证逻辑与数据库实现紧密耦合。这使得单元测试困难（需要真实数据库），且无法轻易切换数据源（如从 SQLite 切换到 PostgreSQL）。
+- **建议**: 使用依赖注入模式，将数据库连接作为参数传入：def login_user(username: str, password: str, db: sqlite3.Connection) -> Optional[dict]:。这样可以在测试时注入 mock 对象。
+
+### 案例 87
+- **日期**: 2026-05-19_103843
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:74
+- **严重程度**: medium
+- **描述**: get_user_orders_n_plus_1 函数在函数末尾关闭数据库连接，但如果中间发生异常（如 SQL 执行失败），连接将不会被关闭，导致连接泄漏。
+- **建议**: 使用 try/finally 块或上下文管理器（with 语句）确保连接始终被关闭。例如：conn = get_db(); try: ... finally: conn.close()。更好的做法是使用 with sqlite3.connect(...) as conn:。
+
+### 案例 88
+- **日期**: 2026-05-19_104435
+- **来源 PR**: stalemate_test.py
+- **文件**: stalemate_test.py:90-99
+- **严重程度**: medium
+- **描述**: create_order 函数在 API Gateway 已做完整输入校验（类型、长度、SQL 注入、XSS）后，再次执行完全相同的校验。这导致约 50% 的请求处理时间浪费在重复劳动上，峰值 3000 QPS 时 CPU 资源严重浪费。
+- **建议**: 1. 移除应用层的重复校验，信任 Gateway 的校验结果（假设 Gateway 是可信的）。2. 如果深度防御是硬性要求，仅在关键字段（如 user_id）保留轻量级类型检查，移除 SQL 注入和 XSS 等计算密集型校验。3. 使用校验结果缓存或传递校验通过的标记，避免重复计算。

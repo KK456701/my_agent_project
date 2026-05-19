@@ -6,7 +6,7 @@
 ## 标准修复
 1. 使用 functools.lru_cache 或 cachetools.TTLCache 替代手动字典缓存。2. 设置合理的 TTL 和最大缓存大小。3. 使用线程安全的缓存实现（如 Redis）或添加锁保护。
 
-## 审查次数: 19
+## 审查次数: 20
 
 ## 历史案例
 
@@ -164,3 +164,11 @@
 - **严重程度**: medium
 - **描述**: 装饰器中使用 print() 记录审计日志，违反了团队编码规范。print() 无法控制日志级别、无法配置输出目标、无法在生产环境中关闭。
 - **建议**: 使用 logging 模块：import logging; logger = logging.getLogger(__name__); logger.info(f"[AUDIT] {payload.get('sub')} accessed")
+
+### 案例 20
+- **日期**: 2026-05-19_103513
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:186-215
+- **严重程度**: medium
+- **描述**: _TOKEN_CACHE 全局字典作为缓存，没有 TTL（过期时间）、没有淘汰策略（如 LRU）、没有大小限制。随着时间推移，所有被访问过的 Token 都会永久驻留内存，导致内存泄漏。
+- **建议**: 1. 使用 functools.lru_cache 或 cachetools.TTLCache 替代手动字典缓存。2. 设置合理的 TTL 和最大缓存大小。3. 使用线程安全的缓存实现（如 Redis）或添加锁保护。
