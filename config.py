@@ -8,6 +8,18 @@ from dotenv import load_dotenv
 # 加载 .env（override=True 强制覆盖已存在的环境变量，防止旧值残留）
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
+# 在导入其他库之前，显式设置 HuggingFace 镜像端点
+_HF_ENDPOINT = os.getenv("HF_ENDPOINT", "")
+if _HF_ENDPOINT:
+    os.environ["HF_ENDPOINT"] = _HF_ENDPOINT
+
+# 在导入其他库之前，显式设置代理（Python 不走浏览器代理）
+for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    _proxy_val = os.getenv(_proxy_var, "")
+    if _proxy_val:
+        os.environ[_proxy_var] = _proxy_val
+        os.environ[_proxy_var.upper()] = _proxy_val  # 兼容大小写
+
 
 class Config:
     """全局配置"""
@@ -31,6 +43,9 @@ class Config:
 
     # --- 输出 ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # --- HuggingFace ---
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 
     @classmethod
     def validate(cls) -> bool:

@@ -6,7 +6,7 @@
 ## 标准修复
 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-## 审查次数: 48
+## 审查次数: 81
 
 ## 历史案例
 
@@ -396,3 +396,267 @@
 - **严重程度**: critical
 - **描述**: 在 save_user_data_encrypted 函数中，encrypted.hex() 直接通过 f-string 拼接到 SQL 查询字符串中。虽然 encrypted.hex() 只包含十六进制字符，但攻击者如果能够控制 user['id'] 或加密前的数据，仍可能通过构造特殊数据导致注入。
 - **建议**: 使用参数化查询：db.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encrypted.hex()))
+
+### 案例 49
+- **日期**: 2026-05-18_134209
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:108-115
+- **严重程度**: info
+- **描述**: get_users_orders 函数中，username 变量通过 f-string 直接拼接到 SQL 查询字符串中。攻击者可以构造恶意的 username 参数（如 "' OR '1'='1"）来执行任意 SQL 命令，导致数据泄露、篡改或删除。
+- **建议**: 使用参数化查询（prepared statement）。对于 sqlite3，应使用 ? 占位符。修改为：query = 'SELECT * FROM orders WHERE username = ?'; cursor.execute(query, (name,))
+
+### 案例 50
+- **日期**: 2026-05-18_134209
+- **来源 PR**: sample_real_conflict.py
+- **文件**: sample_real_conflict.py:108-118
+- **严重程度**: critical
+- **描述**: get_users_orders 函数存在双重问题：1) 在 for 循环内逐条执行数据库查询，如果 usernames 有 1000 个元素，将产生 1001 次数据库往返（1 次连接 + 1000 次查询），复杂度 O(n)。2) username 直接通过 f-string 拼接到 SQL 中，攻击者可构造恶意 username 如 "' OR '1'='1" 导致数据泄露。
+- **建议**: 同时修复两个问题：使用参数化查询 + IN 子句批量查询。修改为：query = "SELECT * FROM orders WHERE username IN ({})".format(','.join(['?']*len(usernames))); cursor.execute(query, usernames)。这样将 1000 次查询降为 1 次，同时消除 SQL 注入风险。注意：如果 usernames 列表过大（>1000），应分批查询。
+
+### 案例 51
+- **日期**: 2026-05-19_092955
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:62-76
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 1000 个元素，将产生 1000 次数据库往返（1 次初始 + 1000 次循环 = 1001 次查询），而使用 IN 子句仅需 2 次查询。时间复杂度从 O(1) 退化为 O(N)。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)，然后在 Python 中按 user_id 分组。
+
+### 案例 52
+- **日期**: 2026-05-19_092955
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:33-56
+- **严重程度**: high
+- **描述**: login_user 函数同时承担了数据库连接管理、SQL 查询、密码验证和用户信息返回等多重职责。这种耦合导致：1) 难以单独测试认证逻辑；2) 数据库变更会影响认证流程；3) 密码比较逻辑与业务逻辑混在一起。
+- **建议**: 将认证逻辑拆分为独立层：1) 创建 UserRepository 类处理数据库操作；2) 创建 AuthService 类处理密码验证和 Token 生成；3) 使用依赖注入传入数据库连接。
+
+### 案例 53
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:67-80
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 1000 个元素，将产生 1000 次数据库往返（1 次初始查询 + 1000 次循环查询 = 1001 次）。每次查询都有网络 I/O 和 SQL 解析开销，导致 O(n) 的数据库连接次数，严重影响吞吐量。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)。这将把 N+1 次查询降为 2 次（1 次查询 + 1 次结果处理）。
+
+### 案例 54
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:36-52
+- **严重程度**: critical
+- **描述**: login_user 函数同时承担了数据库连接管理、SQL 查询构建、密码验证、结果序列化等多重职责。这种耦合导致：1) 无法单独测试认证逻辑（必须依赖真实数据库）；2) 密码比较策略变更需要修改整个函数；3) 数据库连接未在 finally 中关闭，存在资源泄漏风险。
+- **建议**: 1) 将数据库操作抽取为独立的 Repository 层；2) 使用参数化查询替代 f-string 拼接；3) 密码比较应使用专门的密码验证库（如 bcrypt.checkpw）；4) 使用上下文管理器管理数据库连接。
+
+### 案例 55
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:248-248
+- **严重程度**: critical
+- **描述**: 第 248 行将 user['id'] 直接通过 f-string 拼接到 INSERT 语句中。攻击者可以构造恶意的 id 值执行任意 SQL 命令，导致数据泄露或破坏。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))。
+
+### 案例 56
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:283-283
+- **严重程度**: critical
+- **描述**: 第 283 行将 key 参数直接拼接到 SQL 查询中。虽然配置键通常是内部值，但作为公共函数，攻击者仍可能通过构造恶意的 key 参数进行 SQL 注入。
+- **建议**: 使用参数化查询：cursor.execute("SELECT value FROM config WHERE key = ?", (key,))。
+
+### 案例 57
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:50-51
+- **严重程度**: high
+- **描述**: 密码以明文形式存储并与用户输入的密码直接进行字符串比较。如果数据库被泄露，所有用户的密码将直接暴露。即使数据库未泄露，攻击者也可能通过 SQL 注入获取密码哈希（如果使用哈希）或直接获取明文密码。
+- **建议**: 使用 bcrypt 或 argon2 等安全的密码哈希算法。存储时使用 bcrypt.hashpw(password.encode(), bcrypt.gensalt())，验证时使用 bcrypt.checkpw(password.encode(), stored_hash.encode())
+
+### 案例 58
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:253-270
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在循环内逐条执行 INSERT 语句。对于 10000 条记录，将产生 10000 次数据库往返。每次往返都有网络 I/O、SQL 解析、事务日志写入等开销。
+- **建议**: 使用 executemany() 批量插入：cursor.executemany("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", [(user['id'], encoded) for user in users])。这将数据库往返从 N 次降为 1 次，性能提升 10-100 倍。
+
+### 案例 59
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:57-72
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环内逐用户执行 SQL 查询，导致 N+1 性能问题。同时，数据库连接在函数末尾关闭，但若中间发生异常则连接永远不会关闭（资源泄漏）。这违反了异常安全原则和资源管理最佳实践。
+- **建议**: 1) 使用 IN 子句一次查询所有用户的订单：cursor.execute("SELECT * FROM orders WHERE user_id IN ({seq})".format(seq=','.join('?' * len(user_ids))), user_ids)；2) 使用 with 语句或 try/finally 确保连接关闭；3) 考虑使用 ORM 的预加载机制。
+
+### 案例 60
+- **日期**: 2026-05-19_094200
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:68-80
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 1000 个元素，会产生 1000 次数据库往返（1 次初始查询 + 1000 次循环查询 = 1001 次查询）。数据库连接和查询的建立/销毁开销极大，随着用户数增长，性能呈线性恶化。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)。将 N+1 次数据库往返降为 2 次（1 次查询 + 1 次结果获取）。
+
+### 案例 61
+- **日期**: 2026-05-19_094200
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:42-56
+- **严重程度**: critical
+- **描述**: login_user 函数同时负责数据库连接、SQL 查询、密码比较和结果组装。这种耦合导致：1) 无法单独测试认证逻辑；2) 修改数据库实现会影响认证逻辑；3) 密码比较策略（明文 vs 哈希）与查询逻辑绑定，难以切换。
+- **建议**: 将认证逻辑拆分为三层：1) Repository 层负责数据库操作（参数化查询）；2) Service 层负责密码验证和业务逻辑；3) Controller 层负责请求响应。使用依赖注入传递数据库连接。
+
+### 案例 62
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:69-80
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 N 个元素，将产生 N+1 次数据库往返（1 次连接 + N 次查询）。当 N=1000 时，数据库往返次数从 2 次（使用 IN 子句）增加到 1001 次，性能下降约 500 倍。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)，然后按 user_id 分组到 result 字典中。
+
+### 案例 63
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:42-43
+- **严重程度**: critical
+- **描述**: 在 login_user 函数中，username 变量直接通过 f-string 拼接到 SQL 查询字符串中。攻击者可以构造恶意的 username 参数，例如 ' OR '1'='1，来绕过认证或获取所有用户数据。
+- **建议**: 使用参数化查询（prepared statement）来防止 SQL 注入。对于 sqlite3，应使用 ? 占位符。修改为：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+
+### 案例 64
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:253-254
+- **严重程度**: critical
+- **描述**: 在 save_user_data_encrypted 函数中，user['id'] 和 encoded 变量直接通过 f-string 拼接到 SQL 查询中，存在 SQL 注入风险。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))
+
+### 案例 65
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:224-252
+- **严重程度**: high
+- **描述**: user['id'] 通过 f-string 直接拼接到 SQL INSERT 语句中。虽然 user 来自内部数据，但如果数据源不可信（如用户上传的 CSV），攻击者可以构造恶意 ID 执行 SQL 注入。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))
+
+### 案例 66
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:273-301
+- **严重程度**: high
+- **描述**: key 参数通过 f-string 直接拼接到 SQL 查询字符串中。如果 key 来自用户输入（如 HTTP 请求参数），攻击者可以构造恶意输入执行任意 SQL 命令。
+- **建议**: 使用参数化查询：cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
+
+### 案例 67
+- **日期**: 2026-05-19_095239
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:63-76
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环内对每个 user_id 执行单独的 SQL 查询。如果有 N 个用户，就会执行 N+1 次查询（1 次获取用户列表，N 次获取订单），导致严重的性能问题。
+- **建议**: 使用单个 SQL 查询，通过 IN 子句一次性获取所有用户的订单。例如：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join('?' * len(user_ids))})", user_ids)。然后按 user_id 对结果进行分组。
+
+### 案例 68
+- **日期**: 2026-05-19_095920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:66-80
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 1000 个元素，将产生 1000 次数据库往返（1 次初始查询 + 1000 次子查询），而实际只需要 1 次批量查询。复杂度从 O(1) 数据库往返变为 O(N)。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)。将 N+1 次数据库往返降为 2 次。
+
+### 案例 69
+- **日期**: 2026-05-19_095920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:196-224
+- **严重程度**: critical
+- **描述**: 在 INSERT 语句中，user['id'] 通过 f-string 直接拼接到 SQL 查询字符串中。攻击者可以构造恶意的 user['id'] 值，执行任意 SQL 命令。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))
+
+### 案例 70
+- **日期**: 2026-05-19_095920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:240-260
+- **严重程度**: critical
+- **描述**: 在 get_config_with_cache 函数中，key 变量通过 f-string 直接拼接到 SQL 查询字符串中。攻击者可以构造恶意的 key 参数，执行任意 SQL 命令。
+- **建议**: 使用参数化查询：cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
+
+### 案例 71
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:72-84
+- **严重程度**: critical
+- **描述**: get_user_orders_n_plus_1 函数在 for 循环内逐条执行 SQL 查询。如果 user_ids 有 1000 个元素，将产生 1000 次数据库往返（1 次初始查询 + N 次循环查询）。数据库连接和查询的开销远大于批量查询，随着用户数增长，性能呈线性恶化。
+- **建议**: 使用 SQL IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join(['?']*len(user_ids))})", user_ids)。这将数据库往返次数从 N+1 降为 2 次（查询 + 获取结果）。
+
+### 案例 72
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:42-42
+- **严重程度**: critical
+- **描述**: login_user 函数中，username 变量通过 f-string 直接拼接到 SQL 查询字符串中。攻击者可以构造恶意 username 参数（如 ' OR 1=1 --）绕过认证或窃取数据。这是最严重的安全漏洞之一，违反了安全编码规范。
+- **建议**: 使用参数化查询：cursor.execute("SELECT * FROM users WHERE username = ?", (username,))。对于 sqlite3，应使用 ? 占位符。
+
+### 案例 73
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:255-255
+- **严重程度**: critical
+- **描述**: save_user_data_encrypted 函数中，user['id'] 通过 f-string 拼接到 INSERT 语句中，存在 SQL 注入风险。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))。
+
+### 案例 74
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:296-296
+- **严重程度**: critical
+- **描述**: get_config_with_cache 函数中，key 变量通过 f-string 拼接到 SQL 查询中，存在 SQL 注入风险。
+- **建议**: 使用参数化查询：cursor.execute("SELECT value FROM config WHERE key = ?", (key,))。
+
+### 案例 75
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:60-76
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数对每个 user_id 单独执行 SQL 查询，导致 N+1 次数据库往返。当 user_ids 列表较大时（如 1000 个用户），会产生 1000 次查询，严重影响性能。同时，数据库连接未在 finally 块中关闭，可能导致连接泄漏。
+- **建议**: 1. 使用 IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join('?' * len(user_ids))})", user_ids)。2. 使用 with 语句或 try/finally 确保连接关闭。3. 考虑使用 ORM 的预加载功能。
+
+### 案例 76
+- **日期**: 2026-05-19_100321
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:233-260
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在应用层对每行数据单独创建 cipher 对象进行 AES 加密。对于 10000 行数据，会产生 10000 次 AES 初始化开销。同时，手动实现 PKCS7 填充容易出错，且 SQL 注入风险依然存在。
+- **建议**: 1. 考虑使用数据库透明加密（TDE）功能，将加密责任下放到数据库层。2. 如果必须应用层加密，应批量加密：先收集所有数据，使用同一个 cipher 对象（CBC 模式需注意 IV 管理）或使用 GCM 模式。3. 使用参数化查询插入数据。
+
+### 案例 77
+- **日期**: 2026-05-19_101230
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:63-78
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环内对每个用户单独执行 SQL 查询，导致 N+1 性能问题。同时，数据库连接未在 finally 块中关闭，异常发生时可能导致连接泄漏。函数职责不清晰，混合了数据访问和结果组装。
+- **建议**: 1. 使用 IN 子句一次查询所有用户的订单：cursor.execute("SELECT * FROM orders WHERE user_id IN ({seq})".format(seq=','.join('?' * len(user_ids))), user_ids)。2. 使用上下文管理器 with conn: 确保连接自动关闭。3. 将数据访问层与业务逻辑分离。
+
+### 案例 78
+- **日期**: 2026-05-19_101230
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:238-260
+- **严重程度**: high
+- **描述**: save_user_data_encrypted 函数在循环内对每行数据创建新的 AES cipher 对象，导致 10000 行数据需要 10000 次 AES 初始化，性能极差。同时，手动实现 PKCS7 填充容易出错，且 SQL 注入风险依然存在。应用层手动加密不如使用数据库透明加密（TDE）方案。
+- **建议**: 1. 复用 cipher 对象或使用流式加密模式。2. 考虑使用数据库级别的透明加密（TDE）替代应用层加密。3. 使用参数化查询防止 SQL 注入。4. 使用成熟的加密库（如 cryptography）避免手动实现填充逻辑。
+
+### 案例 79
+- **日期**: 2026-05-19_101524
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:254-254
+- **严重程度**: critical
+- **描述**: save_user_data_encrypted 函数中 user['id'] 直接通过 f-string 拼接到 SQL 查询中，存在 SQL 注入风险。攻击者可以构造恶意的 user_id 值。
+- **建议**: 使用参数化查询：cursor.execute("INSERT INTO users_encrypted (id, data) VALUES (?, ?)", (user['id'], encoded))
+
+### 案例 80
+- **日期**: 2026-05-19_101524
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:295-295
+- **严重程度**: critical
+- **描述**: get_config_with_cache 函数中 key 变量直接通过 f-string 拼接到 SQL 查询中，存在 SQL 注入风险。攻击者可以构造恶意的 key 参数。
+- **建议**: 使用参数化查询：cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
+
+### 案例 81
+- **日期**: 2026-05-19_101524
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:62-75
+- **严重程度**: high
+- **描述**: get_user_orders_n_plus_1 函数在循环内对每个 user_id 单独执行 SQL 查询，导致 N+1 查询问题。当 user_ids 列表较大时（如 1000 个用户），会产生 1000 次数据库往返，严重影响性能。
+- **建议**: 使用 IN 子句一次查询所有用户的订单：cursor.execute(f"SELECT * FROM orders WHERE user_id IN ({','.join('?' * len(user_ids))})", user_ids)。同时考虑使用 JOIN 或子查询优化。

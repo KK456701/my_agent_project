@@ -11,6 +11,32 @@
     # 通过 GitHub PR URL 审查
     python app.py --pr https://github.com/owner/repo/pull/123
 """
+import os as _os
+
+# ⚠️ 在任何其他导入之前设置 HuggingFace 镜像（国内用户必须）
+#    必须在 huggingface_hub / transformers 被导入前设置！
+_env_vals = {}
+_hf_endpoint = _os.environ.get("HF_ENDPOINT", "")
+if not _hf_endpoint:
+    # 尝试从 .env 文件读取（config 模块尚未加载）
+    try:
+        from dotenv import dotenv_values
+        _env_vals = dotenv_values(str(__import__("pathlib").Path(__file__).parent / ".env"))
+        _hf_endpoint = _env_vals.get("HF_ENDPOINT", "")
+    except Exception:
+        pass
+if _hf_endpoint:
+    _os.environ["HF_ENDPOINT"] = _hf_endpoint
+
+# ⚠️ 代理设置：Python 不走浏览器代理，需显式设置系统级代理
+for _pv in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    _pv_val = _os.environ.get(_pv, "")
+    if not _pv_val:
+        _pv_val = _env_vals.get(_pv, "") if _env_vals else ""
+    if _pv_val:
+        _os.environ[_pv] = _pv_val
+        _os.environ[_pv.upper()] = _pv_val
+
 import asyncio
 import argparse
 import sys

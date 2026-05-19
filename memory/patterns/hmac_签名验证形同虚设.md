@@ -6,7 +6,7 @@
 ## 标准修复
 使用 JWT 库进行完整的签名验证。如果手动实现，必须将计算出的 HMAC 值与 Token 中的签名部分进行安全比较（使用 hmac.compare_digest 防止时序攻击）。
 
-## 审查次数: 4
+## 审查次数: 9
 
 ## 历史案例
 
@@ -44,3 +44,43 @@
 - **严重程度**: high
 - **描述**: auth_require_permission 装饰器中计算了 HMAC 签名，但计算结果（expected 变量）没有被用于任何比较操作，导致签名验证完全无效。同时 expected 变量被赋值但从未使用。
 - **建议**: 删除无用的 HMAC 计算代码，使用 PyJWT 库进行完整的签名验证。或者，如果手动实现，需要将计算出的签名与 token 中的签名进行比较。
+
+### 案例 5
+- **日期**: 2026-05-19_092955
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:204-210
+- **严重程度**: high
+- **描述**: 代码计算了 HMAC 签名，但没有将计算结果与 Token 中的签名进行比较。这导致签名验证完全无效，任何 Token 都会被接受。同时，expected 变量被赋值但从未使用。
+- **建议**: 使用 jwt.decode 进行完整的签名验证，或手动比较 HMAC 结果：if not hmac.compare_digest(expected, token_signature): raise ValueError('Invalid signature')
+
+### 案例 6
+- **日期**: 2026-05-19_093920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:210-211
+- **严重程度**: medium
+- **描述**: 代码计算了 HMAC 签名，但计算结果 expected 没有被用于任何比较操作。这导致签名验证完全失效，攻击者可以任意伪造 Token。
+- **建议**: 删除未使用的 expected 变量，或实现真正的签名验证逻辑。如果使用 PyJWT 库，签名验证会自动处理。
+
+### 案例 7
+- **日期**: 2026-05-19_095920
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:148-168
+- **严重程度**: medium
+- **描述**: 代码计算了 HMAC 签名，但没有将计算结果与 Token 中的签名进行比较，导致签名验证完全失效。任何 Token 都会被接受。
+- **建议**: 1) 使用成熟的 JWT 库（如 PyJWT）进行验证；2) 如果手动实现，必须将计算出的 HMAC 与 Token 中的签名部分进行安全比较（使用 hmac.compare_digest 防止时序攻击）。
+
+### 案例 8
+- **日期**: 2026-05-19_101524
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:207-209
+- **严重程度**: high
+- **描述**: 代码计算了 HMAC 签名（expected = hmac.new(...)），但从未将计算结果与 Token 中的签名进行比较。这导致签名验证完全无效，任何人都可以伪造 Token。
+- **建议**: 使用标准的 JWT 库进行验证，或手动比较计算出的 HMAC 与 Token 中的签名部分。例如：token_signature = token.split('.')[2]; if not hmac.compare_digest(expected, token_signature): raise ValueError('Invalid signature')
+
+### 案例 9
+- **日期**: 2026-05-19_101524
+- **来源 PR**: Demo: 用户登录模块
+- **文件**: demo/sample_pr.py:196-201
+- **严重程度**: high
+- **描述**: 代码计算了 HMAC 签名（expected），但没有与 Token 中的签名进行比较，导致签名验证完全无效。任何 Token 都会被接受。
+- **建议**: 1) 使用 PyJWT 库自动处理签名验证；2) 如果手动实现，必须比较 expected 与 Token 中的签名：token_signature = token.split('.')[2]; if not hmac.compare_digest(expected, token_signature): raise ValueError('Invalid signature')
