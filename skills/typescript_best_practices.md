@@ -14,15 +14,3 @@
 ### 未使用严格模式
 - **特征**: `tsconfig.json` 中 `strict: false`
 - **修复**: 启用 `strict: true`
-
----
-
-## ⚡ 确定性匹配规则（Skills Cache）
-
-```yaml
-rules:
-  - pattern: ':\s*any\b'
-    severity: medium
-    title: "类型使用 any — 丢失类型安全"
-    fix: "使用具体类型或 unknown + 类型守卫代替 any"
-```

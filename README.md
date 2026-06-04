@@ -66,14 +66,13 @@ PR diff
   跨文件调用、委托层、命名冲突、影响半径
 ```
 
-### 每个 Agent 内部 5 层漏斗
+### 每个 Agent 内部漏斗
 
 ```
 代码片段
   │
   ▼ Linter (Ruff+Bandit)  → 0 Token, <1s
-  ▼ Skills Cache (YAML)   → 0 Token, <1ms, 29条规则
-  ▼ Skills 规范注入        → 按文件类型
+  ▼ Skills 团队规范注入    → 按语言+领域
   ▼ Memory 语义召回        → DeepSeek 选相关模式
   ▼ LLM 审查 (DeepSeek)   → AI 深度分析
 ```
@@ -85,8 +84,7 @@ PR diff
 | 层级 | 功能 | 说明 |
 |:---:|------|------|
 | 🔧 | Linter 静态分析 | Ruff+Bandit, <1s, 0 Token |
-| ⚡ | Skills Cache | 确定性匹配直接跳过 LLM, 29 条规则 |
-| 📘 | Skills 规范注入 | 按文件类型注入团队规范 |
+| 📘 | Skills 团队规范 | 按语言+领域注入编码规范 |
 | 🧠 | 审查记忆 | DeepSeek 语义召回 + Markdown 积累 |
 | 🧭 | 智能路由 | 关键文件 × 文件类型 × Commit 语义 |
 | 🔗 | 关联性分析 | DeepSeek筛选→CodeGraph→受影响文件→审查 |
@@ -168,7 +166,6 @@ my-Agentproject/
 │       ├── review_memory.py    # DeepSeek 语义记忆(v2)
 │       ├── skills_loader.py    # Skills 加载
 │       ├── linter_runner.py    # Ruff + Bandit
-│       ├── pattern_matcher.py  # Skills Cache 匹配
 │       ├── impact_classifier_llm.py # 变更分级(DeepSeek版)
 │       ├── quality_validator.py    # 质量校验
 │       └── github_tool.py      # GitHub API
@@ -177,9 +174,11 @@ my-Agentproject/
 │   ├── security.md / performance.md / architecture.md / impact.md
 │
 ├── skills/                     # 多语言团队编码规范
-│   ├── python_security.md / python_performance.md
+│   ├── python_security.md / python_performance.md / python_architecture.md
 │   ├── go_security.md / go_performance.md / go_architecture.md
-│   └── javascript_security.md / javascript_performance.md
+│   ├── javascript_security.md / javascript_performance.md
+│   ├── java_security.md
+│   └── typescript_best_practices.md
 │
 ├── memory/                     # 审查记忆库
 │   └── patterns/               # 问题模式 (如 sql_injection.md)
@@ -197,11 +196,11 @@ my-Agentproject/
 PR diff → 智能路由 → 4 Agent并行 → 汇聚 → 报告
 
 Token 消耗:
-  Linter / Cache / Memory:  0 token
+  Linter / Memory:         0 token
   4 Agent 审查:             ~30K input (并行)
   关联性筛选 (DeepSeek):    ~500 token
-  CodeGraph CLI:             0 token (本地子进程)
-  报告生成:                  0 token
+  CodeGraph CLI:            0 token (本地子进程)
+  报告生成:                 0 token
   ─────────────────────────
   总计:                     ~30K tokens
 ```
@@ -234,7 +233,7 @@ PR: My feature prtest
 | **4 Agent 并行** | LangGraph Send API 图级并行, 互不阻塞 |
 | **关联性全链路** | DeepSeek筛选 → CodeGraph结构 → 文件源码 → Impact审查 |
 | **记忆语义召回** | DeepSeek 从 101 个模式中选出相关案例注入 prompt |
-| **Skills Cache** | 29 条确定性 YAML 规则, 命中后直接跳过 LLM |
+| **Skills 团队规范** | 多语言×多领域团队编码规范，按 PR 文件类型自动注入 |
 | **三级路由** | fast(2 Agent) / dual(3) / full(4), 按 PR 规模自动选 |
 
 ---
