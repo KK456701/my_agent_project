@@ -106,11 +106,9 @@ async def review_diff(diff_text: str, title: str = "", output_file: str = "", no
         "security_findings": [],
         "performance_findings": [],
         "architecture_findings": [],
-        "conflicts": [],
-        "debate_round": 0,
-        "debate_history": [],
+        "impact_findings": [],
+        "full_file_context": "",
         "final_report": "",
-        "escalated": False,
         "total_tokens": 0,
         "error": "",
     }
@@ -151,12 +149,14 @@ async def _stream_review(initial_state: DebateState) -> str:
         "security": "🛡️",
         "performance": "⚡",
         "architecture": "🏗️",
+        "impact": "🔗",
         "consensus": "⚖️",
     }
     domain_cn = {
         "security": "安全检查",
         "performance": "性能分析",
         "architecture": "架构审查",
+        "impact": "关联性分析",
     }
 
     node_labels = {

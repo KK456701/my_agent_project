@@ -1,375 +1,338 @@
 """
-Markdown 审查记忆系统 — 零依赖的长期知识库
+Markdown 审查记忆系统 v2 — DeepSeek 驱动的语义召回与积累
 
-思路：像 Claude Code 一样用 Markdown 文件做知识存储
-- memory/patterns/   → 按问题类型分类的模式知识（如 sql_injection.md）
-- reports/           → 每次审查的完整报告（由 app.py 自动保存）
+工作流:
+  审查前 → DeepSeek 语义召回 → 选出相关模式文件 → 加载案例注入 prompt
+  审查后 → DeepSeek 语义分类 → 判断 finding 归入已有模式或新建
 
-工作流：
-  审查前 → 扫描 PR diff → 匹配已知模式 → 注入到 Agent prompt
-  审查后 → 提取新发现 → 更新/创建模式文件
+md 文件格式 (v2):
+  ---
+  name: "SQL 注入漏洞"
+  description: "使用 f-string/字符串拼接构建 SQL 查询，未使用参数化"
+  ---
+  ## 历史案例
+  ### 案例 1
+  - **日期**: ...
+  - **来源 PR**: ...
+  - **文件**: ...
+  - **描述**: ...
+  - **修复**: ...
 """
 import re
-import hashlib
+import yaml
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from config import config
 
-# 记忆存储根目录
 MEMORY_ROOT = Path(__file__).parent.parent.parent / "memory"
 PATTERNS_DIR = MEMORY_ROOT / "patterns"
 
-# ── 召回配置 ──
-MAX_PATTERNS_INJECTED = 5        # 最多注入 5 个模式（防止上下文爆炸）
-MAX_MEMORY_CHARS = 5000          # 记忆总字符数上限（约 1200 tokens）
-PATTERN_SUMMARY_LENGTH = 500     # 每个模式的摘要长度
-MIN_KEYWORD_MATCHES = 2          # 最少命中关键词数
-
-# ── 模式文件缓存（避免每次召回都读磁盘）──
-_pattern_cache: dict[str, tuple[float, str]] = {}  # filename → (mtime, content)
+MAX_PATTERNS_INJECTED = 5
+MAX_MEMORY_CHARS = 5000
+DIFF_SUMMARY_CHARS = 3000
 
 
-def _build_dynamic_signatures() -> dict:
-    """
-    从 memory/patterns/ 目录动态构建签名表
-    
-    不再依赖硬编码的 PATTERN_SIGNATURES，
-    而是从所有 .md 文件中自动提取关键词。
-    
-    策略：取文件名 + 前 200 字符作为关键词来源
-    """
-    signatures = {}
-    for md_file in PATTERNS_DIR.glob("*.md"):
-        name = md_file.stem
+# ============================================================
+# DeepSeek LLM
+# ============================================================
+
+def _get_llm(temperature: float = 0) -> ChatOpenAI:
+    """获取 DeepSeek LLM（分类任务用 temperature=0）"""
+    return ChatOpenAI(
+        model=config.MODEL_NAME,
+        temperature=temperature,
+        api_key=config.API_KEY,
+        base_url=config.API_BASE or None,
+    )
+
+
+# ============================================================
+# 解析 frontmatter
+# ============================================================
+
+def _parse_frontmatter(filepath: Path) -> dict:
+    """解析 md 的 YAML frontmatter → {name, description}"""
+    try:
+        content = filepath.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+    if match:
         try:
-            content = md_file.read_text(encoding="utf-8")
+            return yaml.safe_load(match.group(1)) or {}
         except Exception:
-            continue
-
-        # 从文件名和内容中提取关键词
-        keywords = set()
-
-        # 1. 文件名本身就是关键词（如 sql_injection → ["sql", "injection"]）
-        for part in re.split(r'[_\-\s]+', name.lower()):
-            if len(part) >= 3:
-                keywords.add(part)
-
-        # 2. 从内容中提取技术关键词（简单分词，不用复杂正则）
-        tech_keywords = [
-            "f-string", "execute", "SELECT", "INSERT", "DELETE", "DROP",
-            "UNION", "WHERE", "md5", "sha256", "bcrypt", "hashlib", "AES",
-            "RSA", "JWT", "token", "cursor", "cipher", "encrypt", "decrypt",
-            "N+1", "循环", "loop", "fetchall", "fetchone",
-            "参数化", "parameterized", "硬编码", "hardcoded", "SECRET_KEY",
-            "API_KEY", "密码", "password", "session", "缓存", "cache",
-            "decorator", "装饰器", "logging", "print", "sleep", "hmac",
-            "salt", "padding", "PKCS", "injection", "注入",
-        ]
-        content_lower = content[:1500].lower()
-        for term in tech_keywords:
-            if term.lower() in content_lower:
-                keywords.add(term.lower())
-
-        # 3. 从内容中的反引号代码片段提取标识符
-        code_snippets = re.findall(r'`([^`]{3,80})`', content)
-        for snippet in code_snippets[:8]:
-            identifiers = re.findall(r'\b([a-zA-Z_]\w{2,})\b', snippet)
-            keywords.update(i.lower() for i in identifiers)
-
-        signatures[name] = {
-            "keywords": list(keywords)[:30],  # 限制每模式最多 30 个关键词
-            "title": content.split("\n")[0].replace("# 模式: ", "").strip() if content.startswith("#") else name,
-        }
-
-    return signatures
+            return {}
+    return {}
 
 
-def _get_cached_pattern(pattern_file: Path) -> str:
-    """读取模式文件（带 mtime 缓存，减少磁盘 I/O）"""
-    mtime = pattern_file.stat().st_mtime
-    cached = _pattern_cache.get(pattern_file.name)
-    if cached and cached[0] == mtime:
-        return cached[1]
+def _read_full(filepath: Path) -> str:
+    try:
+        return filepath.read_text(encoding="utf-8")
+    except Exception:
+        return ""
 
-    content = pattern_file.read_text(encoding="utf-8")
-    _pattern_cache[pattern_file.name] = (mtime, content)
-    return content
 
+# ============================================================
+# 构建清单
+# ============================================================
+
+def _build_checklist() -> Tuple[str, dict]:
+    """扫描所有 .md → (清单文本, {filename: {name, description}})"""
+    items = []
+    metas = {}
+    for md_file in sorted(PATTERNS_DIR.glob("*.md")):
+        meta = _parse_frontmatter(md_file)
+        if meta.get("name"):
+            fname = md_file.stem
+            metas[fname] = meta
+            items.append(f"- [{fname}] {meta['name']}: {meta.get('description', '')}")
+    return "\n".join(items), metas
+
+
+# ============================================================
+# Phase 1: 召回
+# ============================================================
 
 def recall_knowledge(pr_diff: str) -> str:
     """
-    扫描 PR diff，匹配已知模式，返回应注入 Agent 的知识片段
-    
-    ⚡ 优化：
-    1. 动态构建签名表（扫描所有 .md 文件，不再硬编码）
-    2. 相关性评分（关键词命中数 + 模式审查次数加权）
-    3. Top-K 截断（最多注入 5 个模式）
-    4. Token 预算控制（总字符 ≤ 5000）
-    5. 文件缓存（避免重复磁盘 I/O）
-    
+    DeepSeek 语义召回 → 选出相关模式 → 加载案例 → 注入 prompt
+
     Returns:
-        应追加到 system prompt 的知识文本（空字符串 = 无匹配）
+        追加到 system prompt 的知识文本（空字符串 = 无匹配）
     """
-    diff_lower = pr_diff.lower()
-
-    # 动态构建签名表
-    signatures = _build_dynamic_signatures()
-    if not signatures:
+    checklist, metas = _build_checklist()
+    if not metas:
         return ""
 
-    # ── 评分 + 匹配 ──
-    scored: list[tuple[int, str, str]] = []  # (score, title, summary)
+    diff_summary = pr_diff[:DIFF_SUMMARY_CHARS]
 
-    for pattern_name, sig in signatures.items():
-        pattern_file = PATTERNS_DIR / f"{pattern_name}.md"
-        if not pattern_file.exists():
-            continue
-
-        # 关键词命中数
-        hits = sum(1 for kw in sig["keywords"] if kw in diff_lower)
-        if hits < MIN_KEYWORD_MATCHES:
-            continue
-
-        # 加权：审查次数多的模式加分
-        content = _get_cached_pattern(pattern_file)
-        count_match = re.search(r'## 审查次数: (\d+)', content)
-        review_count = int(count_match.group(1)) if count_match else 1
-        score = hits + min(review_count, 10)  # 审查次数最多加 10 分
-
-        # 摘要：取标准修复 + 一个案例
-        fix_match = re.search(r'## 标准修复\n(.+?)(?=\n##|\Z)', content, re.DOTALL)
-        case_match = re.search(r'### 案例 \d+\n(.+?)(?=\n###|\Z)', content, re.DOTALL)
-
-        summary_parts = [f"**模式**: {sig['title']} (命中 {hits} 关键词, 审查 {review_count} 次)"]
-        if fix_match:
-            summary_parts.append(f"**标准修复**: {fix_match.group(1).strip()[:300]}")
-        if case_match:
-            summary_parts.append(f"**最新案例**: {case_match.group(1).strip()[:200]}")
-
-        summary = "\n".join(summary_parts)[:PATTERN_SUMMARY_LENGTH]
-        scored.append((score, sig["title"], summary))
-
-    if not scored:
+    try:
+        llm = _get_llm(temperature=0)
+        response = llm.invoke([
+            HumanMessage(content=_recall_prompt(checklist, diff_summary))
+        ])
+        result = response.content.strip()
+    except Exception as e:
+        print(f"[Memory] 召回失败: {e}")
         return ""
 
-    # ── Top-K + Token 预算 ──
-    scored.sort(key=lambda x: x[0], reverse=True)
-    scored = scored[:MAX_PATTERNS_INJECTED]
+    if result == "NONE" or not result:
+        return ""
 
+    selected = re.findall(r'\[(.+?)\]', result)
+    selected = [s for s in selected if s in metas][:MAX_PATTERNS_INJECTED]
+    if not selected:
+        return ""
+
+    # 拼接注入文本
     knowledge = "\n\n---\n## 🧠 审查记忆库（历史相似问题）\n\n"
-    knowledge += f"> 从 {len(signatures)} 个已知模式中匹配到 {len(scored)} 个相关模式\n"
-    knowledge += "> ⚡ 对匹配的模式，如当前代码一致可直接引用已有结论\n\n"
+    knowledge += f"> 从 {len(metas)} 个已知模式中匹配到 {len(selected)} 个相关模式\n"
+    knowledge += "> ⚡ 以下为历史相似案例，如当前代码一致可直接引用已有结论\n\n"
 
     total_chars = len(knowledge)
-    injected = 0
-    for score, title, summary in scored:
-        chunk = f"### 📚 {title} (相关度: {score}分)\n{summary}\n\n---\n"
+    for fname in selected:
+        meta = metas[fname]
+        full = _read_full(PATTERNS_DIR / f"{fname}.md")
+        body = re.sub(r'^---\n.*?\n---\n', '', full, flags=re.DOTALL)
+        cases_text = body[:800].strip()
+
+        chunk = (
+            f"### 📚 {meta['name']}\n"
+            f"> {meta.get('description', '')}\n\n"
+            f"{cases_text}\n\n---\n"
+        )
         if total_chars + len(chunk) > MAX_MEMORY_CHARS:
-            break  # 超出 token 预算，停止注入
+            break
         knowledge += chunk
         total_chars += len(chunk)
-        injected += 1
-
-    if injected == 0:
-        return ""
 
     return knowledge
 
 
+def _recall_prompt(checklist: str, diff_summary: str) -> str:
+    return f"""你是代码审查记忆库的检索器。以下是所有已知问题模式，以及一个 PR 的代码变更。
+请选出与本次 PR 最相关的模式（最多 {MAX_PATTERNS_INJECTED} 个），只输出 ID，每行一个，格式如 [filename]。
+
+已知模式：
+{checklist}
+
+PR 代码变更：
+```
+{diff_summary}
+```
+
+只输出相关模式的 ID，每行一个。没有相关模式则只输出 NONE。"""
+
+
 # ============================================================
-# Phase 2: 审查后 — 归档新知识
+# Phase 2: 积累
 # ============================================================
 
-def save_review_to_memory(report: str, pr_diff: str, title: str = ""):
+def save_review_to_memory(report: str, pr_diff: str = "", title: str = ""):
     """
-    审查完成后，从报告中提取发现并归档到记忆库
-    
-    从报告中正则提取 finding → 更新/创建 memory/patterns/ 下的模式文件
-    （完整报告由 app.py 保存到 reports/ 目录）
+    DeepSeek 语义积累：对每个 finding 判断归属 → 追加或新建
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    findings = _extract_findings_from_report(report)
+    if not findings:
+        return
 
-    # 提取问题并更新模式文件
-    _extract_and_update_patterns(report, pr_diff, title, timestamp)
+    checklist, metas = _build_checklist()
+    llm = _get_llm(temperature=0)
+
+    for finding in findings:
+        try:
+            _classify_and_update(finding, checklist, metas, llm, title, timestamp)
+        except Exception as e:
+            print(f"[Memory] 积累失败 ({finding.get('title', '?')[:30]}): {e}")
 
 
-def _extract_and_update_patterns(report: str, pr_diff: str, title: str, timestamp: str):
-    """
-    从报告中提取 finding，更新对应模式文件
-    
-    适配实际报告格式：
-      ## 🔴 Critical
-      ### finding标题
-      - **位置**: `file`:lines | ...
-      - **描述**: ...
-      - **修复**: ...
-    """
-    severity_map = {"🔴": "critical", "🟠": "high", "🟡": "medium", "🟢": "low", "ℹ️": "info"}
-    
-    # 先找所有 section header 确定每个 finding 的 severity
-    section_pattern = re.compile(r'## (🔴|🟠|🟡|🟢|ℹ️) (\w+)')
-    sections = list(section_pattern.finditer(report))
-    
-    # 找所有 finding: ### title\n- **位置**: `file`:lines | ...\n- **描述**: ...\n- **修复**: ...
-    finding_pattern = re.compile(
-        r'### (.+?)\n'
-        r'- \*\*位置\*\*: `(.+?)`:([\d\-]+) \|.*?\n'
-        r'- \*\*描述\*\*: (.+?)\n'
-        r'- \*\*修复\*\*: (.+?)(?=\n\n|\n###|\n---|\n##|\Z)',
-        re.DOTALL
-    )
-    
-    findings = []
-    for match in finding_pattern.finditer(report):
-        pos = match.start()
-        # 找这个 finding 属于哪个 severity section
-        sev = "info"
-        for s in reversed(sections):
-            if s.start() < pos:
-                sev = severity_map.get(s.group(1), "info")
-                break
-        
-        findings.append({
-            "severity_emoji": sev,
-            "title": match.group(1).strip(),
-            "file": match.group(2).strip(),
-            "lines": match.group(3).strip(),
-            "severity": sev,
-            "description": match.group(4).strip().replace("\n", " "),
-            "suggestion": match.group(5).strip().replace("\n", " "),
-        })
+def _classify_and_update(
+    finding: dict, checklist: str, metas: dict,
+    llm: ChatOpenAI, pr_title: str, timestamp: str
+):
+    """对单个 finding: DeepSeek 分类 → 追加或新建"""
+    prompt = f"""你是代码审查记忆库的分类器。判断以下审查发现应归入哪个已有模式，还是新建模式。
 
-    # 按关键词将 finding 归类到模式文件
-    for f in findings:
-        pattern_name = _classify_finding(f)
-        if not pattern_name:
-            continue
+已有模式：
+{checklist if checklist else "（暂无已有模式）"}
 
-        pattern_file = PATTERNS_DIR / f"{pattern_name}.md"
+新发现：
+- 标题: {finding.get('title', '')}
+- 描述: {finding.get('description', '')}
+- 修复: {finding.get('fix', '')}
 
-        # ── 创建或更新模式文件 ──
-        if pattern_file.exists():
-            _update_pattern(pattern_file, f, title, timestamp)
+只输出以下之一（不要输出其他内容）：
+- 归入已有模式输出 ID，如 [sql_injection]
+- 新建模式输出 NEW"""
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    result = response.content.strip()
+
+    if result == "NEW":
+        _create_new_pattern(finding, pr_title, timestamp)
+    else:
+        match = re.search(r'\[(.+?)\]', result)
+        if match and (PATTERNS_DIR / f"{match.group(1)}.md").exists():
+            _append_case(PATTERNS_DIR / f"{match.group(1)}.md", finding, pr_title, timestamp)
         else:
-            _create_pattern(pattern_file, pattern_name, f, title, timestamp)
+            _create_new_pattern(finding, pr_title, timestamp)
 
 
-def _classify_finding(finding: dict) -> Optional[str]:
-    """根据 finding 标题和描述，归类到已知模式"""
-    text = (finding["title"] + " " + finding["description"]).lower()
+def _append_case(filepath: Path, finding: dict, pr_title: str, timestamp: str):
+    """追加案例到已有文件"""
+    date_str = timestamp.replace('_', ' ')[:16]
 
-    category_map = {
-        "sql_injection": ["sql", "注入", "injection"],
-        "hardcoded_secret": ["硬编码", "hardcoded", "密钥", "secret", "密码", "password"],
-        "md5_hash": ["md5", "哈希", "hash"],
-        "n_plus_1_query": ["n+1", "循环", "逐条", "批量", "loop", "batch"],
-        "missing_parameterization": ["参数化", "parameterized", "占位符", "placeholder"],
-        "connection_leak": ["连接", "connection", "泄漏", "关闭", "close", "leak"],
-        "magic_number": ["魔法数字", "magic number", "硬编码数值"],
-    }
+    # 去重
+    existing = _read_full(filepath)
+    file_key = f"{finding.get('file', '')}:{finding.get('lines', '')}"
+    if file_key in existing and file_key != ":":
+        return
 
-    for name, keywords in category_map.items():
-        if any(kw in text for kw in keywords):
-            return name
+    case_nums = re.findall(r'### 案例 (\d+)', existing)
+    case_num = max(int(n) for n in case_nums) + 1 if case_nums else 1
 
-    # 未匹配 → 用标题创建新模式
-    return _slugify(finding["title"])
+    new_case = f"""
+### 案例 {case_num}
+- **日期**: {date_str}
+- **来源 PR**: {pr_title}
+- **文件**: {finding.get('file', '')}:{finding.get('lines', '')}
+- **描述**: {finding.get('description', '')}
+- **修复**: {finding.get('fix', '')}
+"""
+    with open(filepath, 'a', encoding='utf-8') as f:
+        f.write(new_case)
 
 
-def _create_pattern(pattern_file: Path, name: str, finding: dict, title: str, timestamp: str):
-    """创建新的模式文件"""
-    content = f"""# 模式: {finding['title']}
+def _create_new_pattern(finding: dict, pr_title: str, timestamp: str):
+    """新建记忆模式文件"""
+    date_str = timestamp.replace('_', ' ')[:16]
+    slug = re.sub(r'[^\w\u4e00-\u9fff_-]', '_', finding.get('title', 'unknown'))[:60]
+    slug = re.sub(r'_+', '_', slug).strip('_')
+    filepath = PATTERNS_DIR / f"{slug}.md"
+    if filepath.exists():
+        filepath = PATTERNS_DIR / f"{slug}_{timestamp[-6:]}.md"
 
-## 代码特征
-（自动从首次发现中提取，后续审查会逐步丰富）
+    name_safe = finding.get('title', 'Unknown').replace('"', "'")
+    desc_safe = (finding.get('description', '') or finding.get('title', ''))[:200].replace('"', "'")
 
-## 标准修复
-{finding['suggestion']}
-
-## 审查次数: 1
+    content = f"""---
+name: "{name_safe}"
+description: "{desc_safe}"
+---
 
 ## 历史案例
 
 ### 案例 1
-- **日期**: {timestamp}
-- **来源 PR**: {title}
-- **文件**: {finding['file']}:{finding['lines']}
-- **严重程度**: {finding['severity']}
-- **描述**: {finding['description']}
-- **建议**: {finding['suggestion']}
-
----
-> 本文件由 Agent 自动维护，后续同类问题会自动追加案例。
+- **日期**: {date_str}
+- **来源 PR**: {pr_title}
+- **文件**: {finding.get('file', '')}:{finding.get('lines', '')}
+- **描述**: {finding.get('description', '')}
+- **修复**: {finding.get('fix', '')}
 """
-    pattern_file.write_text(content, encoding="utf-8")
-
-
-def _update_pattern(pattern_file: Path, finding: dict, title: str, timestamp: str):
-    """更新已有模式文件：增加案例 + 更新计数（相同文件+行号去重）"""
-    current = pattern_file.read_text(encoding="utf-8")
-
-    # 更新审查次数
-    count_match = re.search(r'## 审查次数: (\d+)', current)
-    old_count = int(count_match.group(1)) if count_match else 0
-    current = current.replace(
-        f"## 审查次数: {old_count}",
-        f"## 审查次数: {old_count + 1}"
-    )
-
-    # 去重：检查是否已有相同文件+行号的案例
-    file_lines = f"{finding['file']}:{finding['lines']}"
-    if file_lines in current:
-        return  # 已有相同位置的案例，只更新计数，不追加重复案例
-
-    # 追加新案例
-    case_num = old_count + 1
-    new_case = f"""
-### 案例 {case_num}
-- **日期**: {timestamp}
-- **来源 PR**: {title}
-- **文件**: {file_lines}
-- **严重程度**: {finding['severity']}
-- **描述**: {finding['description']}
-- **建议**: {finding['suggestion']}
-"""
-    current += new_case
-    pattern_file.write_text(current, encoding="utf-8")
+    filepath.write_text(content, encoding="utf-8")
 
 
 # ============================================================
-# 工具函数
+# 从报告提取 finding
+# ============================================================
+
+def _extract_findings_from_report(report: str) -> list[dict]:
+    """正则提取报告中的所有 finding"""
+    findings = []
+    skip_keywords = ["静态分析", "辩论裁决", "交叉发现", "总览", "📊"]
+
+    sections = re.split(r'\n## (?=🔴|🟠|🟡|🟢|ℹ️)', report)
+
+    for section in sections:
+        if any(s in section for s in skip_keywords):
+            continue
+
+        blocks = re.split(r'\n(?=### )', section)
+        for block in blocks:
+            if not block.strip().startswith('###'):
+                continue
+
+            title_match = re.match(r'### (.+?)\n', block)
+            if not title_match:
+                continue
+            title = title_match.group(1).strip()
+
+            if 'Skills 规则命中' in block and '描述' not in block:
+                continue
+
+            pos_match = re.search(r'\*\*位置\*\*:\s*`?(.+?)`?(?:\s*\||\n)', block)
+            desc_match = re.search(r'\*\*描述\*\*:\s*(.+?)(?=\n- \*\*|\n\n|\n###|\Z)', block, re.DOTALL)
+            fix_match = re.search(r'\*\*修复\*\*:\s*(.+?)(?=\n- \*\*|\n\n|\n###|\Z)', block, re.DOTALL)
+
+            description = desc_match.group(1).strip().replace("\n", " ") if desc_match else ""
+            fix = fix_match.group(1).strip().replace("\n", " ") if fix_match else ""
+
+            if not description and not fix:
+                continue
+
+            file_info = pos_match.group(1).strip() if pos_match else ""
+            findings.append({
+                "title": title,
+                "file": file_info.split(":")[0] if ":" in file_info else file_info,
+                "lines": file_info.split(":")[1] if ":" in file_info else "",
+                "description": description[:500],
+                "fix": fix[:500],
+            })
+
+    return findings
+
+
+# ============================================================
+# 统计
 # ============================================================
 
 def get_memory_stats() -> dict:
-    """获取记忆库统计信息"""
     patterns = list(PATTERNS_DIR.glob("*.md"))
-
     total_cases = 0
     for p in patterns:
-        content = p.read_text(encoding="utf-8")
-        match = re.search(r'## 审查次数: (\d+)', content)
-        if match:
-            total_cases += int(match.group(1))
-
-    return {
-        "pattern_files": len(patterns),
-        "total_cases": total_cases,
-    }
-
-
-def _slugify(text: str) -> str:
-    """把中文标题转为安全的文件名片段"""
-    import unicodedata
-    # 替换特殊字符为下划线
-    result = []
-    for ch in text:
-        if ch.isalnum() or ch in "_-":
-            result.append(ch)
-        elif ch == " ":
-            result.append("_")
-        else:
-            result.append("_")
-    slug = "".join(result)
-    # 压缩连续下划线
-    slug = re.sub(r'_+', '_', slug).strip('_').lower()
-    return slug[:50] if slug else "unknown"
+        total_cases += len(re.findall(r'### 案例 \d+', _read_full(p)))
+    return {"pattern_files": len(patterns), "total_cases": total_cases}

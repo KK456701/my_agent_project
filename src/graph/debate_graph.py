@@ -1,31 +1,19 @@
 """
-LangGraph 辩论图 — 多智能体代码审查的核心编排
+LangGraph 审查图 — 多智能体代码审查的核心编排 (v2 无辩论版)
 
 图结构：
 
     START
       ↓
-  [route_pr]   ← 分级路由：快速通道 / 双Agent / 全阵容
+  [route_pr]          ← 分级路由：fast / dual / full
       ↓
-  [parallel_review]  ← 并行审查 (Send API)
+  [parallel_review]   ← 并行审查 (Send API)
       ↓
-  [merge_findings]   ← 汇聚所有 Agent 的发现
-      ↓
-  [detect_conflicts] ← 碰撞检测
-      ↓
-    ┌── 有冲突? ── 否 ──→ [generate_report] → END
-    ↓  是
-  [debate_round]   ← 辩论循环（最多 MAX_DEBATE_ROUNDS 轮）
-      ↓
-  [check_consensus] ← 裁决
-      ↓
-    ┌── 已共识? ── 是 ──→ [generate_report] → END
-    ↓  否
-    ┌── 轮次 < MAX? ── 是 ──→ [debate_round] (循环)
-    ↓  否
-  [escalate_to_human] → [generate_report] → END
+  [generate_report]   ← 汇聚 + 生成报告 → END
 """
 from typing import Literal
+import subprocess, json as json_mod
+from pathlib import Path
 from langgraph.graph import StateGraph, END
 from langgraph.constants import Send
 
@@ -33,10 +21,12 @@ from src.graph.state import DebateState
 from src.agents.security_agent import SecurityReviewAgent
 from src.agents.performance_agent import PerformanceReviewAgent
 from src.agents.architecture_agent import ArchitectureReviewAgent
-from src.agents.consensus_agent import ConsensusAgent
-from src.tools.code_analyzer import count_diff_lines, count_diff_files, detect_conflicts, truncate_diff
+from src.tools.code_analyzer import count_diff_lines, count_diff_files, truncate_diff
 from src.tools.smart_router import smart_route, RouteMode
 from config import config
+
+# CodeGraph CLI 路径
+CG_PATH = r"C:\Users\lenovo\AppData\Local\codegraph\current\bin\codegraph.cmd"
 
 
 # ============================================================
@@ -70,18 +60,106 @@ def route_pr(state: DebateState) -> dict:
     )
 
     domain_map = {
-        RouteMode.FAST: ["security"],
-        RouteMode.DUAL: ["security", "performance"],
-        RouteMode.FULL: ["security", "performance", "architecture"],
+        RouteMode.FAST: ["security", "impact"],
+        RouteMode.DUAL: ["security", "performance", "impact"],
+        RouteMode.FULL: ["security", "performance", "architecture", "impact"],
     }
+
+    # ── 关联性分析全链路 ──
+    # ① DeepSeek 筛选需要深挖的变更行
+    # ② CodeGraph CLI 查受影响文件
+    # ③ 读取受影响文件 + 变更文件完整源码
+    # ④ 注入 Impact Agent
+    full_file_context = ""
+    try:
+        project_root = config.PROJECT_ROOT
+        if project_root:
+            root = Path(project_root)
+
+            # ── 第 1 步：DeepSeek 筛选 ──
+            from src.tools.impact_classifier_llm import classify_changes_llm
+            skip_list, light_list, deep_list = classify_changes_llm(
+                diff, project_root, deep_threshold=1
+            )
+
+            # 收集所有需要深挖的符号
+            deep_symbols = [d.symbol for d in deep_list if d.symbol]
+
+            # ── 第 2 步：CodeGraph 查受影响文件 ──
+            affected_files = set()
+            if deep_symbols:
+                for symbol in deep_symbols[:5]:  # 最多查 5 个符号
+                    try:
+                        # 查调用方
+                        r = subprocess.run(
+                            [CG_PATH, "callers", symbol, "--json"],
+                            cwd=str(root), capture_output=True, text=True, timeout=10
+                        )
+                        if r.returncode == 0:
+                            data = json_mod.loads(r.stdout)
+                            for c in data.get("callers", []):
+                                fp = c.get("filePath", "")
+                                if fp:
+                                    affected_files.add(fp)
+
+                        # 查影响范围
+                        r = subprocess.run(
+                            [CG_PATH, "impact", symbol, "--depth", "2", "--json"],
+                            cwd=str(root), capture_output=True, text=True, timeout=10
+                        )
+                        if r.returncode == 0:
+                            data = json_mod.loads(r.stdout)
+                            for n in data.get("affected", []):
+                                fp = n.get("filePath", "")
+                                if fp and not fp.endswith((".java", ".py", ".go", ".ts", ".js")):
+                                    continue
+                                if fp:
+                                    affected_files.add(fp)
+                    except Exception:
+                        continue
+
+            # ── 第 3 步：读取文件完整源码 ──
+            parts = []
+            MAX_CHARS_PER_FILE = 2500
+
+            # 先放受影响文件
+            for f in sorted(affected_files):
+                full_path = root / f
+                if full_path.exists() and full_path not in [root / x for x in files]:
+                    try:
+                        content = full_path.read_text(encoding="utf-8", errors="ignore")
+                        parts.append(f"### 📎 受影响文件: {f}\n```\n{content[:MAX_CHARS_PER_FILE]}\n```")
+                    except Exception:
+                        pass
+
+            # 再放变更文件
+            for f in files:
+                full_path = root / f
+                if full_path.exists():
+                    try:
+                        content = full_path.read_text(encoding="utf-8", errors="ignore")
+                        parts.append(f"### 📝 变更文件: {f}\n```\n{content[:MAX_CHARS_PER_FILE]}\n```")
+                    except Exception:
+                        pass
+
+            if parts:
+                # 加筛选摘要
+                summary = f"\n> 影响力分级: 跳过 {len(skip_list)} | 轻量 {len(light_list)} | 深挖 {len(deep_list)}"
+                if deep_symbols:
+                    summary += f"\n> 深挖符号: {', '.join(deep_symbols[:5])}"
+                if affected_files:
+                    summary += f"\n> CodeGraph 发现 {len(affected_files)} 个受影响文件"
+                parts.insert(0, summary)
+                full_file_context = "\n\n".join(parts)
+
+    except Exception as e:
+        print(f"[ImpactPipeline] 失败: {e}")
 
     return {
         "review_mode": mode.value,
         "route_reason": reason,
         "active_domains": domain_map[mode],
-        "debate_round": 0,
-        "conflicts": [],
-        "escalated": False,
+        "full_file_context": full_file_context,
         "total_tokens": 0,
         "error": "",
     }
@@ -103,6 +181,7 @@ def continue_to_reviews(state: DebateState) -> list[Send]:
             "domain": domain,
             "pr_diff": state["pr_diff"],
             "pr_files": state["pr_files"],
+            "full_file_context": state.get("full_file_context", ""),
         }))
     return sends
 
@@ -172,6 +251,14 @@ async def review_node(state: DebateState) -> dict:
         "architecture": ArchitectureReviewAgent,
     }
 
+    # Impact Agent 有特殊处理（需要代码图谱上下文）
+    if domain == "impact":
+        from src.agents.impact_agent import ImpactReviewAgent
+        agent = ImpactReviewAgent()
+        full_ctx = state.get("full_file_context", "")
+        findings = await agent.review(diff, files, full_file_context=full_ctx)
+        return {"impact_findings": findings}
+
     agent_cls = agents.get(domain)
     if not agent_cls:
         return {}
@@ -201,177 +288,29 @@ async def review_node(state: DebateState) -> dict:
     return {result_key: findings}
 
 
-def merge_findings(state: DebateState) -> dict:
-    """
-    节点 3：汇聚所有 Agent 的发现
-    
-    各 Agent 的 findings 已通过 operator.add reducer 自动合并到对应列表
-    这里做冲突检测
-    """
-    findings_by_domain = {
-        "security": state.get("security_findings", []),
-        "performance": state.get("performance_findings", []),
-        "architecture": state.get("architecture_findings", []),
-    }
-
-    return {"_findings_by_domain": findings_by_domain}
-
-
-def detect_conflicts_node(state: DebateState) -> dict:
-    """
-    节点 4：冲突检测
-    
-    找出不同 Agent 对同一代码区域产生的不同判断
-    """
-    findings_by_domain = {
-        "security": state.get("security_findings", []),
-        "performance": state.get("performance_findings", []),
-        "architecture": state.get("architecture_findings", []),
-    }
-
-    conflicts = detect_conflicts(findings_by_domain)
-
-    return {"conflicts": conflicts}
-
-
-def decide_after_detect(state: DebateState) -> Literal["debate_round", "generate_report"]:
-    """只有对抗性冲突时才进辩论，正交发现直接进报告"""
-    conflicts = state.get("conflicts", [])
-    adversarial = [c for c in conflicts if c.get("adversarial") != False]
-    if adversarial:
-        return "debate_round"
-    return "generate_report"
-
-
-async def debate_round(state: DebateState) -> dict:
-    """
-    节点 5：辩论轮次 — 并行裁决所有冲突
-    
-    ⚡ 优化：所有冲突并发裁决（asyncio.gather），而非串行 for 循环
-    之前：35 个冲突 × 3s = 105s
-    现在：35 个冲突并发 → ~5s（等最慢的那个）
-    """
-    import asyncio
-
-    conflicts = state.get("conflicts", [])
-    debate_round = state.get("debate_round", 0)
-    debate_history = state.get("debate_history", [])
-
-    if not conflicts:
-        return {"debate_round": debate_round + 1}
-
-    # ── 并行裁决所有冲突（信号量控制并发）──
-    MAX_CONCURRENT = 8  # 最多同时 8 个裁决请求，避免 API 限流
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-
-    async def resolve_one(conflict: dict):
-        """裁决单个冲突（在 gather 中并发执行）"""
-        if conflict.get("status") == "resolved":
-            return ("skip", conflict)
-
-        current_round = debate_round + 1
-
-        async with semaphore:
-            consensus_agent = ConsensusAgent()
-            resolution = await consensus_agent.resolve(conflict, debate_history, round_num=current_round)
-
-        conflict["debate_rounds"] = current_round
-
-        if resolution.get("resolution") == "stalemate":
-            if current_round >= config.MAX_DEBATE_ROUNDS:
-                conflict["status"] = "escalated"
-                return ("escalated", conflict)
-            else:
-                return ("pending", conflict)
-        else:
-            conflict["status"] = "resolved"
-            conflict["resolution"] = resolution.get("final_suggestion", "")
-            conflict["reasoning"] = resolution.get("reasoning", "")
-            return ("resolved", conflict)
-
-    # 所有冲突并行裁决！
-    results = await asyncio.gather(*[resolve_one(c) for c in conflicts])
-
-    resolved = []
-    still_pending = []
-    for status, conflict in results:
-        if status == "resolved":
-            resolved.append(conflict)
-        elif status in ("escalated", "pending"):
-            still_pending.append(conflict)
-        # "skip" = 已经 resolved 的，放回 resolved
-        else:
-            resolved.append(conflict)
-
-    # 记录本轮辩论历史（包含各方立场，供下一轮参考）
-    new_history = debate_history + [
-        {
-            "round": debate_round + 1,
-            "conflict_id": c.get("conflict_id"),
-            "status": c.get("status"),
-            "resolution": c.get("resolution", ""),
-            "positions": c.get("positions", {}),
-        }
-        for c in conflicts
-    ]
-
-    return {
-        "conflicts": resolved + still_pending,
-        "debate_round": debate_round + 1,
-        "debate_history": new_history,
-    }
-
-
-def decide_after_debate(state: DebateState) -> Literal["debate_round", "escalate", "generate_report"]:
-    """条件边：辩论后的路由决策"""
-    conflicts = state.get("conflicts", [])
-    debate_round = state.get("debate_round", 0)
-
-    # 所有冲突都已解决
-    pending = [c for c in conflicts if c.get("status") not in ("resolved", "escalated")]
-    if not pending:
-        return "generate_report"
-
-    # 还有未解决的，但轮次已到上限 → 升级
-    if debate_round >= config.MAX_DEBATE_ROUNDS:
-        return "escalate"
-
-    # 继续辩论
-    return "debate_round"
-
-
-def escalate_to_human(state: DebateState) -> dict:
-    """
-    节点 6：升级给人工审查者
-    
-    标记所有未解决的冲突为 escalated
-    """
-    conflicts = state.get("conflicts", [])
-    for c in conflicts:
-        if c.get("status") not in ("resolved", "escalated"):
-            c["status"] = "escalated"
-
-    return {"conflicts": conflicts, "escalated": True}
+# ── 辩论冲突相关节点已移除 (v2) ——
+# detect_conflicts_node, debate_round, decide_after_detect,
+# decide_after_debate, escalate_to_human, merge_findings 不再需要
 
 
 def generate_report(state: DebateState) -> dict:
     """
-    节点 7：生成最终审查报告（按严重程度排序，融合所有来源）
+    节点 3：汇聚所有 Agent 发现 + 生成最终审查报告
     """
     security = state.get("security_findings", [])
     performance = state.get("performance_findings", [])
     architecture = state.get("architecture_findings", [])
-    conflicts = state.get("conflicts", [])
-    debate_round = state.get("debate_round", 0)
+    impact = state.get("impact_findings", [])
     mode = state.get("review_mode", "fast")
-    all_findings = security + performance + architecture
+    all_findings = security + performance + architecture + impact
 
     # ── 统计 ──
-    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     cache_count = 0
     agent_count = 0
     for f in all_findings:
-        sev_counts[f.get("severity", "low")] = sev_counts.get(f.get("severity", "low"), 0) + 1
+        sev = f.get("severity", "low")
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
         if f.get("source") == "skills_cache":
             cache_count += 1
         else:
@@ -396,26 +335,6 @@ def generate_report(state: DebateState) -> dict:
 
     # ── Skills 列表 ──
     skills_list = ""
-    default_file = (state.get("pr_files") or ["unknown"])[0] if state.get("pr_files") else "unknown"
-    _fix = lambda f: f if f and f != "see diff" else default_file
-
-    # ── 正交交叉发现 ──
-    orthogonal_section = ""
-    try:
-        from src.tools.code_analyzer import detect_conflicts
-        orthogonal = getattr(detect_conflicts, '_last_orthogonal', [])
-        if orthogonal:
-            orthogonal_section = f"\n\n---\n## 🔗 Agent 交叉发现（互补，无需辩论）\n\n> {len(orthogonal)} 处代码被多个 Agent 从不同角度关注。\n\n"
-            for c in orthogonal[:8]:
-                f = _fix(c.get('file',''))
-                da = c.get('domain_a','?')
-                db = c.get('domain_b','?')
-                orthogonal_section += f"- `{f}` — {da} + {db} 共同关注\n"
-    except Exception:
-        pass
-
-    # ── Skills 列表 ──
-    skills_list = ""
     try:
         from src.tools.skills_loader import load_skills_for_files
         skills = load_skills_for_files(state.get("pr_files", []))
@@ -424,12 +343,17 @@ def generate_report(state: DebateState) -> dict:
     except Exception:
         pass
 
+    default_file = (state.get("pr_files") or ["unknown"])[0] if state.get("pr_files") else "unknown"
+    _fix = lambda f: f if f and f != "see diff" else default_file
+
     # ============ 生成报告 ============
     total = len(all_findings)
     critic = sev_counts.get("critical", 0)
     high = sev_counts.get("high", 0)
     mid = sev_counts.get("medium", 0)
     low = sev_counts.get("low", 0)
+    info = sev_counts.get("info", 0)
+    domains = state.get("active_domains", [])
 
     report = f"""# 🔍 代码审查报告
 
@@ -438,10 +362,9 @@ def generate_report(state: DebateState) -> dict:
 | 项目 | 详情 |
 |------|------|
 | PR | {state.get('pr_title', 'N/A')} |
-| 审查模式 | {mode}（{len(state.get('active_domains',[]))} Agent） |
-| 总问题 | {total}（🔴{critic} 🟠{high} 🟡{mid} 🟢{low}） |
+| 审查模式 | {mode}（{len(domains)} Agent: {", ".join(domains)}） |
+| 总问题 | {total}（🔴{critic} 🟠{high} 🟡{mid} 🟢{low} 💡{info}） |
 | 来源 | Skills Cache: {cache_count} | Agent: {agent_count} |
-| 辩论 | {debate_round} 轮 | 对抗性冲突: {len([c for c in conflicts if c.get('adversarial')])} |
 | 规范 | {skills_list or '—'} |
 
 ---
@@ -477,35 +400,6 @@ def generate_report(state: DebateState) -> dict:
         if desc:
             report += f"- **描述**: {desc}\n"
         report += f"- **修复**: {fix}\n"
-
-    # ── 辩论 ──
-    adversarial = [c for c in conflicts if c.get("adversarial")]
-    if adversarial:
-        report += "\n---\n## ⚔️ 辩论裁决\n"
-        resolved = [c for c in adversarial if c.get("status") == "resolved"]
-        escalated = [c for c in adversarial if c.get("status") == "escalated"]
-        if resolved:
-            report += f"### ✅ 已裁决 ({len(resolved)})\n\n"
-            for c in resolved[:8]:
-                f = _fix(c.get('file',''))
-                da = c.get('domain_a','?')
-                db = c.get('domain_b','?')
-                resolution = c.get('resolution', '')
-                report += f"**{da} vs {db}** — `{f}` ({c.get('lines','')})\n"
-                if resolution:
-                    report += f"> 裁决: {resolution[:200]}\n"
-                report += "\n"
-        if escalated:
-            report += f"\n### 🔺 需人工裁决 ({len(escalated)})\n"
-            for c in escalated:
-                f = _fix(c.get('file',''))
-                report += f"- `{f}`: 辩论 {c.get('debate_rounds',0)} 轮未共识\n"
-            for c in escalated:
-                report += f"- `{c.get('file','')}` : 辩论 {c.get('debate_rounds',0)} 轮未共识\n"
-
-    # ── 正交 ──
-    if orthogonal_section:
-        report += orthogonal_section
 
     # ── 质量校验 ──
     try:
@@ -586,61 +480,27 @@ def _build_fixer_payload(
 
 def build_debate_graph() -> StateGraph:
     """
-    构建辩论式多智能体审查图
-    
-    Returns:
-        编译后的 StateGraph
+    构建多智能体审查图 (v2 无辩论版)
+
+    节点: route_pr → parallel_review → generate_report → END
     """
     graph = StateGraph(DebateState)
 
-    # 注册节点
     graph.add_node("route_pr", route_pr)
     graph.add_node("review_node", review_node)
-    graph.add_node("merge_findings", merge_findings)
-    graph.add_node("detect_conflicts", detect_conflicts_node)
-    graph.add_node("debate_round", debate_round)
-    graph.add_node("escalate", escalate_to_human)
     graph.add_node("generate_report", generate_report)
 
-    # 边
     graph.set_entry_point("route_pr")
 
-    # 分级路由 → 并行审查 (使用 Send API 的条件边)
+    # 分级路由 → 并行审查
     graph.add_conditional_edges(
         "route_pr",
         continue_to_reviews,
         path_map=["review_node"],
     )
 
-    # 审查 → 汇聚
-    graph.add_edge("review_node", "merge_findings")
-
-    # 汇聚 → 冲突检测
-    graph.add_edge("merge_findings", "detect_conflicts")
-
-    # 冲突检测 → 辩论 或 直接生成报告
-    graph.add_conditional_edges(
-        "detect_conflicts",
-        decide_after_detect,
-        {
-            "debate_round": "debate_round",
-            "generate_report": "generate_report",
-        },
-    )
-
-    # 辩论 → 检查是否继续
-    graph.add_conditional_edges(
-        "debate_round",
-        decide_after_debate,
-        {
-            "debate_round": "debate_round",
-            "escalate": "escalate",
-            "generate_report": "generate_report",
-        },
-    )
-
-    # 升级 → 生成报告
-    graph.add_edge("escalate", "generate_report")
+    # 审查完成 → 直接生成报告
+    graph.add_edge("review_node", "generate_report")
 
     # 报告 → 结束
     graph.add_edge("generate_report", END)

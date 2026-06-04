@@ -1,203 +1,104 @@
-# 🔍 多智能体辩论式 PR 审查系统
+# 🔍 多智能体 PR 代码审查系统
 
-基于 **LangChain + LangGraph** 的 GitHub PR 自动审查系统。
+基于 **LangChain + LangGraph + CodeGraph** 的 GitHub PR 自动审查系统。
 
-> 三个 AI Agent（🛡️安全 / ⚡性能 / 🏗️架构）独立审查 PR diff → 发现分歧 → 辩论裁决 → 生成报告。让每个 PR 在合并前都经过多维度自动审查。
+> 四个 AI Agent（🛡️安全 / ⚡性能 / 🏗️架构 / 🔗关联性）并行审查 PR，从多维度发现代码问题。
 
 ---
 
 ## 🎯 定位
 
-**这是一个 PR 审查工具，不是通用代码分析器。**
-
 - ✅ 对 GitHub PR 进行自动化审查（`--pr`）
 - ✅ Webhook 模式下 PR 创建即自动审查
-- ✅ `--file` 仅用于本地测试，方便开发调试
+- ✅ `--file` 仅用于本地测试
 - ❌ 不是 IDE 插件，不是代码格式化工具
 
 ---
 
-## 🎯 核心亮点
-
-### 多 Agent 辩论（不是分头干活）
+## 🏗️ 架构
 
 ```
-Security Agent:  "这里要参数化查询，防止 SQL 注入"
-Performance Agent: "但参数化在这个场景有 10% 开销"
-Consensus Agent:  "折中方案：参数化 + statement cache，两者兼得"
-
-→ 单 Agent 永远产生不了这种对抗性思考
+                        GitHub PR / 本地文件
+                              │
+                    ┌─────────┴─────────┐
+                    │  ① 智能路由        │
+                    │  关键文件×类型     │
+                    │  ×Commit语义      │
+                    │  → fast/dual/full │
+                    └─────────┬─────────┘
+                              │
+         ┌────────────────────┼────────────────────┐
+         │                    │                    │
+         ▼                    ▼                    ▼
+   ┌──────────┐        ┌──────────┐        ┌──────────┐
+   │ 🛡️ 安全   │        │ ⚡ 性能   │        │ 🏗️ 架构   │
+   │ Agent    │        │ Agent    │        │ Agent    │
+   └──────────┘        └──────────┘        └──────────┘
+         │                    │                    │
+         │    LangGraph Send API 并行执行          │
+         │                    │                    │
+         └────────────────────┼────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │  ② 关联性全链路    │  ← Impact Agent
+                    │  DeepSeek筛选     │
+                    │  → CodeGraph查    │
+                    │  → 读受影响文件   │
+                    │  → 关联性审查     │
+                    └─────────┬─────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │  ③ 生成报告        │
+                    │  按严重度排序      │
+                    └────────────────────┘
 ```
-
-### 审查能力栈
-
-| 层级 | 功能 | 说明 |
-|:---:|------|------|
-| 🔧 | **Linter 静态分析** | 多语言支持，< 1s，0 Token |
-| ⚡ | **Skills Cache** | 确定性命中直接跳过 LLM，29 条跨语言规则 |
-| 📘 | **Skills 规范** | 按文件类型自动注入团队规范 |
-| 🧠 | **审查记忆** | Markdown 知识库自动积累，越审越准 |
-| 🧭 | **智能路由** | 关键文件 × 文件类型 × Commit 语义 |
-| ⚔️ | **Agent 辩论** | 对抗性冲突 → Consensus 裁决，正交发现直出 |
-| 🔺 | **人工升级** | 辩论 3 轮僵局 / 置信度 < 0.6 → 升级人工 |
 
 ---
 
-## 🏗️ 完整架构
+## 🔗 关联性分析全链路
 
 ```
-                          PR 提交
-                            │
-                    ┌───────┴───────┐
-                    │  diff 预处理   │
-                    │  截断 + 统计    │
-                    └───────┬───────┘
-                            │
-              ┌─────────────┴─────────────┐
-              │       智能路由             │
-              │  关键文件 + 类型 + Commit   │
-              │  → fast / dual / full      │
-              └─────────────┬─────────────┘
-                            │
-         ┌──────────────────┼──────────────────┐
-         ↓                  ↓                  ↓
-   ┌──────────────────────────────────────────────┐
-   │  每个 Agent 内部 (LangGraph Send API 并行)     │
-   │                                              │
-   │  ① Linter 静态分析    (< 1s, 0 Token)         │
-   │  ② Skills Cache 匹配  (< 1ms, 0 Token)        │
-   │  ③ Skills 规范注入    (按文件类型)             │
-   │  ④ Memory 召回注入    (Top-5, +600 tokens)    │
-   │  ⑤ LLM 审查          (deepseek-chat)          │
-   └──────────────────┬───────────────────────────┘
-                      │
-              ┌───────┴───────┐
-              │  汇聚 findings │
-              └───────┬───────┘
-                      │
-              ┌───────┴───────┐
-              │   冲突检测      │
-              │  规则+NLI      │
-              └───────┬───────┘
-                      │
-        ┌──── 修复互斥? ──── 否 ──→ 正交标注 ──────┐
-        ↓ 是                                       │
-  ┌──────────┐                                      │
-  │ 辩论循环  │  Consensus, max 3轮, asyncio.gather  │
-  └────┬─────┘                                      │
-       ↓                                            │
-  ┌── 共识? ── 是 ──────────────────────────────────┘
-  ↓ 否
-┌──────────┐
-│ 升级人工  │
-└────┬─────┘
-     └──────────────────────────────────┐
-                                        ↓
-                              ┌──────────────────┐
-                              │  generate_report  │
-                              └────────┬─────────┘
-                                       ↓
-                              ┌─────────────────┐
-                              │  reports/xxx.md  │
-                              └────────┬────────┘
-                                       ↓
-                              ┌─────────────────┐
-                              │   记忆归档        │
-                              │  patterns/*.md   │
-                              └─────────────────┘
+PR diff
+  │
+  ▼ ① DeepSeek 分类器
+  skip 跳过 | light 轻量 | deep 深挖
+  │
+  ▼ ② CodeGraph CLI (deep 标记的符号)
+  codegraph callers → 找到调用方
+  codegraph impact  → 分析影响半径
+  │
+  ▼ ③ 读取受影响文件完整源码
+  变更文件 + 跨文件依赖文件
+  │
+  ▼ ④ Impact Agent 审查
+  跨文件调用、委托层、命名冲突、影响半径
 ```
 
-### 记忆库生命周期
+### 每个 Agent 内部 5 层漏斗
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│  审查前 (召回) — 0 Token                                     │
-│  ┌─────────────┐     ┌─────────────┐    ┌──────────────┐    │
-│  │ memory/      │ ──→ │ _build_     │ ──→│ recall_      │    │
-│  │ patterns/    │     │ dynamic_    │    │ knowledge()  │    │
-│  │ *.md         │     │ signatures()│    │ Top-5 注入   │    │
-│  └─────────────┘     │ 文件名+内容  │    │ Agent prompt │    │
-│                      │ 提取关键词    │    └──────────────┘    │
-│                      └─────────────┘                        │
-│                                                              │
-│  审查后 (入库) — 0 Token                                     │
-│                                                              │
-│  generate_report() 产生报告文本                               │
-│       │                                                     │
-│       ├──→ _save_report() ──→ reports/xxx.md  (给人看)      │
-│       │                                                     │
-│       └──→ save_review_to_memory(report)                    │
-│                │                                            │
-│                └──→ 正则提取 finding（标题/文件/行号/建议）   │
-│                         │                                   │
-│                         ├── 已知模式 → _update_pattern()     │
-│                         │              审查次数+1 + 追加案例  │
-│                         │                                   │
-│                         └── 新问题   → _create_pattern()     │
-│                                       新建 .md 文件          │
-│                                                              │
-│  报告和 Pattern 独立存储，互不依赖：                           │
-│  - reports/     = 完整审查报告（给人看，可删除不影响系统）     │
-│  - patterns/    = 结构化知识（给 Agent 用，越审越准）         │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+代码片段
+  │
+  ▼ Linter (Ruff+Bandit)  → 0 Token, <1s
+  ▼ Skills Cache (YAML)   → 0 Token, <1ms, 29条规则
+  ▼ Skills 规范注入        → 按文件类型
+  ▼ Memory 语义召回        → DeepSeek 选相关模式
+  ▼ LLM 审查 (DeepSeek)   → AI 深度分析
 ```
 
-### 数据流总结
+---
 
-```
-PR diff ──→ 智能路由 ──→ Agent并行审查 ──→ 汇聚 ──→ 冲突检测 ──→ reports/xxx.md
-          (3维加权)    (每个Agent内部:          (规则+NLI)
-                       Linter→Cache→Skills
-                       →Memory→LLM)
+## ⚡ 审查能力栈
 
-Token 消耗分布:
-  ① Linter / Cache / Memory:  0 token（纯 Python/子进程/正则）
-  ② 3 Agent 审查:              约 22K input tokens（并行，等最慢）
-  ③ 冲突检测:                   0 token（规则 <1ms + NLI 模型本地 CPU ~50ms）
-  ④ 辩论裁决:                   仅在修复互斥时触发，约 2K/次 × 并发
-  ⑤ 报告 + 质量校验:            0 token（纯字符串拼接）
-  ─────────────────────────
-  总计:          约 25K tokens（辩论触发时额外 2-6K）
-```
-
-### 冲突检测详解
-
-```
-                    fa, fb (不同 domain, 同文件)
-                              │
-                    ┌─────────┴─────────┐
-                    │   同位置？          │
-                    │   (行号重叠≤5行)    │
-                    └─────────┬─────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ↓ 同位置                          ↓ 不同位置
-    ┌──────────────────┐            ┌──────────────────────┐
-    │ _check_          │            │ _check_same_issue    │
-    │ contradiction_v2 │            │ (embedding > 0.85)  │
-    │                  │            └──────────┬───────────┘
-    │ Layer 1: 硬编码规则│                     │
-    │   5类互斥词对      │          ┌──────────┴──────────┐
-    │ Layer 2: NLI 矛盾  │          ↓ 同一问题    ↓ 不同问题
-    │   双向contradiction│    ┌──────────────┐  ┌────────┐
-    │                   │    │ 同左: 规则+NLI│  │  跳过   │
-    │ 互斥 → 🔴 对抗     │    │ 互斥→🔴 对抗 │  └────────┘
-    │ 否则 → 🟢 正交     │    │ 否则→🟢 正交 │
-    └──────────────────┘    └──────────────┘
-```
-
-**唯一判据：修复方案是否互斥。** 位置只是辅助信号。
-
-**三层矛盾检测**：
-1. 硬编码规则（0 Token, <1ms）— 5 类高置信度互斥词对，覆盖 90%+ 场景
-2. NLI 矛盾检测模型（本地 CPU, ~50ms）— 规则未命中时兜底，双向 contradiction 判断
-3. 保守默认 — 都不命中判非互斥，宁漏勿滥
-
-**为什么不用 embedding 算矛盾**：embedding 按主题算余弦相似度，"删除缓存"和"加 TTL 缓存"都含"缓存"→0.999 相似，分不出矛盾。NLI 模型专门训练 contradiction/entailment/neutral，才真正能做矛盾检测。
-
-**测试验证**：`python demo/test_conflict_pipeline.py` 绕过 LLM Agent，用预制矛盾 findings 验证整条管线。
+| 层级 | 功能 | 说明 |
+|:---:|------|------|
+| 🔧 | Linter 静态分析 | Ruff+Bandit, <1s, 0 Token |
+| ⚡ | Skills Cache | 确定性匹配直接跳过 LLM, 29 条规则 |
+| 📘 | Skills 规范注入 | 按文件类型注入团队规范 |
+| 🧠 | 审查记忆 | DeepSeek 语义召回 + Markdown 积累 |
+| 🧭 | 智能路由 | 关键文件 × 文件类型 × Commit 语义 |
+| 🔗 | 关联性分析 | DeepSeek筛选→CodeGraph→受影响文件→审查 |
+| 🤖 | 4 Agent 并行 | 安全+性能+架构+关联性, Send API 并行 |
 
 ---
 
@@ -217,31 +118,35 @@ pip install ruff bandit
 ```bash
 copy .env.example .env
 # 编辑 .env:
-#   OPENAI_API_KEY=sk-xxx        # DeepSeek / OpenAI Key
-#   GITHUB_TOKEN=ghp_xxx          # GitHub Personal Access Token（勾选 repo）
+#   OPENAI_API_KEY=sk-xxx            # DeepSeek API Key
+#   OPENAI_API_BASE=https://api.deepseek.com
+#   MODEL_NAME=deepseek-chat
+#   GITHUB_TOKEN=ghp_xxx             # GitHub Token
+#   PROJECT_ROOT=F:\PRtest\testagentPR  # 本地项目路径
 ```
 
-### 3. 审查 PR
+### 3. 安装 CodeGraph
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex
+
+# 索引项目
+cd F:\PRtest\testagentPR
+codegraph init -i
+```
+
+### 4. 审查 PR
 
 ```bash
 # 一行命令审查 GitHub PR
 python app.py --pr https://github.com/用户/仓库/pull/123
 
-# 指定 commit 语义（影响路由策略）
-python app.py --pr https://github.com/用户/仓库/pull/123 --commit "hotfix: urgent"
-
-# 启动 Webhook 服务（PR 创建时自动审查）
-python app.py --serve
-```
-
-### 4. 本地测试（不需要 PR）
-
-```bash
-# Demo 模式
-python app.py
-
-# 审查指定文件
+# 本地测试
 python app.py --file demo/sample_pr.py
+
+# Webhook 服务
+python app.py --serve
 ```
 
 ---
@@ -250,133 +155,95 @@ python app.py --file demo/sample_pr.py
 
 ```
 my-Agentproject/
-├── app.py                     # 主入口 CLI（流式输出 + 多模式）
-├── app_web.py                 # FastAPI + GitHub Webhook
-├── config.py                  # 全局配置
-├── .env / .env.example        # 环境变量
+├── app.py                      # 主入口 CLI
+├── app_web.py                  # FastAPI + GitHub Webhook
+├── config.py                   # 全局配置
+├── .env                        # 环境变量
 │
 ├── src/
 │   ├── graph/
-│   │   ├── state.py           # LangGraph State（TypedDict）
-│   │   └── debate_graph.py    # 核心辩论图（7 节点 + 条件路由）
+│   │   ├── state.py            # LangGraph State
+│   │   └── debate_graph.py     # 核心审查图 (路由→审查→报告)
 │   ├── agents/
-│   │   ├── base.py            # Agent 基类（记忆注入 + Skills 注入）
-│   │   ├── security_agent.py  # 🛡️ 安全审查
-│   │   ├── performance_agent.py
-│   │   ├── architecture_agent.py
-│   │   └── consensus_agent.py # ⚖️ 辩论裁决
+│   │   ├── base.py             # Agent 基类
+│   │   ├── security_agent.py   # 🛡️ 安全审查
+│   │   ├── performance_agent.py # ⚡ 性能审查
+│   │   ├── architecture_agent.py # 🏗️ 架构审查
+│   │   └── impact_agent.py     # 🔗 关联性审查
 │   └── tools/
-│       ├── code_analyzer.py   # Diff 解析 + 截断 + 冲突检测
-│       ├── smart_router.py    # 三维度智能路由
-│       ├── review_memory.py   # Markdown 审查记忆（召回 + 归档）
-│       ├── skills_loader.py   # Skills 体系（按文件类型加载）
-│       ├── linter_runner.py   # Ruff + Bandit (多语言)
-│       ├── pattern_matcher.py  # Skills Cache 确定性匹配引擎
-│       ├── semantic_reranker.py # 语义精排（RAG Rerank）— 可选
-│       ├── quality_validator.py # 0 Token 质量校验（语法/路径/敏感信息/一致性）
-│       └── github_tool.py     # GitHub API 封装
+│       ├── code_analyzer.py    # Diff 解析 + 截断
+│       ├── smart_router.py     # 三维度智能路由
+│       ├── review_memory.py    # DeepSeek 语义记忆(v2)
+│       ├── skills_loader.py    # Skills 加载
+│       ├── linter_runner.py    # Ruff + Bandit
+│       ├── pattern_matcher.py  # Skills Cache 匹配
+│       ├── impact_classifier_llm.py # 变更分级(DeepSeek版)
+│       ├── quality_validator.py    # 质量校验
+│       └── github_tool.py      # GitHub API
 │
-├── prompts/                   # Agent System Prompt
-│   ├── security.md / performance.md / architecture.md / consensus.md
+├── prompts/                    # Agent System Prompt
+│   ├── security.md / performance.md / architecture.md / impact.md
 │
-├── skills/                    # 多语言团队编码规范（Python/Go/JS/TS）
-│   ├── python_security.md / python_performance.md / python_architecture.md
+├── skills/                     # 多语言团队编码规范
+│   ├── python_security.md / python_performance.md
 │   ├── go_security.md / go_performance.md / go_architecture.md
-│   └── javascript_security.md / javascript_performance.md / typescript_best_practices.md
+│   └── javascript_security.md / javascript_performance.md
 │
-├── memory/                    # 审查记忆库（Markdown，自动积累）
-│   └── patterns/              # 问题模式（如 sql_injection.md）
+├── memory/                     # 审查记忆库
+│   └── patterns/               # 问题模式 (如 sql_injection.md)
 │
-└── demo/
-    └── sample_pr.py           # 故意包含问题的 Demo 代码
+├── reports/                    # 审查报告存档
+├── demo/                       # 测试代码
+└── scripts/                    # 工具脚本
 ```
 
 ---
 
-## ⚡ 性能优化
+## 📊 审查数据流
 
-| 优化项 | 效果 |
-|--------|------|
-| 并行辩论（asyncio.gather） | 辩论从串行数秒/个 → 并发秒级完成 |
-| diff 截断（去噪保留变更行） | Token ↓ 30% |
-| 信号量控制并发 | 防 API 限流 |
-| 分级路由（小改动走快速通道） | 70% PR 省 2/3 Token |
-| Linter 预处理（非 LLM） | 静态问题秒出 |
+```
+PR diff → 智能路由 → 4 Agent并行 → 汇聚 → 报告
+
+Token 消耗:
+  Linter / Cache / Memory:  0 token
+  4 Agent 审查:             ~30K input (并行)
+  关联性筛选 (DeepSeek):    ~500 token
+  CodeGraph CLI:             0 token (本地子进程)
+  报告生成:                  0 token
+  ─────────────────────────
+  总计:                     ~30K tokens
+```
+
+### 报告示例
+
+```
+📊 总览
+PR: My feature prtest
+审查模式: full（4 Agent）
+总问题: 24（🔴4 🟠8 🟡5 🟢4 💡3）
+
+🔴 Critical
+  parseToken 方法重复定义 — JwtUtil.java:32-42
+
+🟠 High  
+  不必要的委托层：generateToken → JwtUtil.createToken
+  不必要的委托层：parseToken → JwtUtil.parseToken
+
+🟡 Medium
+  UserContext 职责膨胀，违反单一职责原则
+```
 
 ---
 
-## 🔺 Human-in-the-Loop：什么情况需要人工
+## 🔧 关键设计
 
-### 触发条件
-
-| 条件 | 说明 | 代码位置 |
-|------|------|---------|
-| **Consensus 裁决"僵局"** | 两个 Agent 的论据权重相当，AI 无法判断谁对 | `debate_round()` stalemate 分支 |
-| **达到最大辩论轮次** | 辩论 3 轮仍未共识 → 自动升级 | `MAX_DEBATE_ROUNDS = 3` |
-| **置信度不足** | Consensus Agent 判决 confidence < 0.6 | `prompts/consensus.md` 约定 |
-
-### 典型场景
-
-```
-Security: "必须参数化查询，这是 SQL 注入"        ← 安全优先
-Performance: "参数化会导致索引失效，QPS 降 30%"   ← 性能优先
-Consensus: "双方都有道理，我无法判断业务优先级"    ← stalemate
-    ↓ 3 轮后
-→ 📋 升级给人工，附双方论据："请确认是安全优先还是性能优先"
-```
-
-### 报告中的体现
-
-```markdown
-### 🔺 需人工裁决 (2 个)
-
-- 文件: src/auth.py (行 42-45)
-  - 各方立场 (辩论 3 轮后未达成共识):
-    - security: SQL 注入风险，必须用参数化查询
-    - performance: 当前索引策略下参数化会降 30% QPS
-```
-
-> ⚡ 不是"AI 无能"，而是"AI 知道什么时候该让人类拍板"——这是负责任的设计。
-
----
-
-## 💡 QA
-
-**Q: 这个多智能体和传统大模型对话有什么区别？**
-> 不是多轮对话！每个 Agent 是 LangGraph 编排下的一次独立 LLM 调用，用不同的 System Prompt 塑造不同"人格"。Agent 之间不直接通信，上下文通过 LangGraph State 在节点间传递。3 个 Agent 审查是 Send API 图级并行，辩论裁决是 asyncio.gather 并发。
-
-**Q: 为什么用多智能体而不是单 Agent？**
-> 代码审查的本质是**权衡**——安全、性能、可读性经常互相冲突。单 Agent 面对冲突会"和稀泥"，多 Agent 辩论让不同视角正面交锋，产生单大脑永远不会有的对抗性思考。
-
-**Q: Token 消耗会不会很高？**
-> 做了四级优化：分级路由（小 PR 走快速通道）、diff 截断、并行辩论、Linter 预处理（静态问题不耗 LLM）。优化后单 PR 成本控制在数美分级别。
-
-**Q: 记忆系统怎么做的？**
-> 不用向量数据库，用 Markdown 文件——类似 Claude Code 的 Memory。每次审查后自动归档到 `memory/patterns/`，下次相似代码关键词匹配 + 加权评分召回。零依赖、人类可读、Git 可追踪。
-
-**Q: 模式文件多了会影响性能吗？**
-> 不会。关键词匹配是 O(n) 内存操作，每个文件只读前 1500 字符。注入有双重硬限制：最多 Top-5 个模式 + 总字符 ≤ 5000。25 个文件和 10000 个文件对 LLM 的 Token 消耗完全一样。
-
-**Q: 生成的报告怎么用？**
-> 一份 review.md，按严重程度排序（critical → info），每个问题标注来源（Cache/Agent）和修复建议。PR 审查完后直接发给开发者即可。
-
-**Q: 什么时候需要人工介入？**
-> Consensus Agent 裁决为"僵局"（双方论据权重相当）且辩论 3 轮未共识，或置信度 < 0.6 时，自动升级。报告里用「🔺 需人工裁决」标记，附双方论据。
-
-**Q: Skills Cache、Linter、Memory 三者有什么区别？**
-> Linter（外部程序，预定义规则）只给"可疑"标记；Skills Cache（内部 YAML 规则，人确认过的）命中直接出修复方案并跳过 LLM；Memory（机器自动积累）有误召回风险，注入 prompt 让 Agent 二次确认。递进关系：Linter 查语法 → Cache 查确定模式 → Agent 查剩下的。
-
-**Q: 冲突检测怎么判断对抗 vs 正交？**
-> 唯一判据：**修复方案是否互斥**。同位置直接查矛盾，不同位置先用 embedding 判断是否同一问题（>0.85），再查矛盾。矛盾检测三层：硬编码规则（5类互斥词对，0 Token）→ NLI 模型（双向 contradiction，本地 CPU）→ 保守默认。修复方案打架 → 对抗送辩论；不打架 → 正交标注「🔗 交叉发现」。
-
-**Q: 为什么用 NLI 而不是 embedding 做矛盾检测？**
-> embedding 算余弦相似度，"删除缓存"和"加 TTL 缓存"都含"缓存"→0.999 相似，分不出矛盾。NLI 模型训练目标是 contradiction/entailment/neutral，才是真正做矛盾检测的。规则抓高频（90%+），NLI 抓漏网。模型离线 CPU 推理，优雅降级。
-
-**Q: 为什么实际审查中对抗性冲突很少？**
-> LLM Agent 天然倾向给出平衡方案而非极端立场。即使代码有明显的 trade-off（如"旧加密库有 CVE vs 替换后性能降 15 倍"），Agent 也会给出"升级 + 加硬件加速"之类的折中建议，而非对立方案。这不是 bug——好的审查就应该是理性折中的。辩论机制是安全网，不是日常功能。测试管道完整性的方式：`python demo/test_conflict_pipeline.py`。
-
-**Q: Linter 是 LangChain Tool 吗？**
-> 当前是 Pre-processing 模式——审查前秒出结果、拼进 prompt，比 Tool Calling 更高效。确定性操作不需要 Agent 花 round-trip 去"决定"调不调。升级路径已预留。
+| 设计 | 说明 |
+|------|------|
+| **4 Agent 并行** | LangGraph Send API 图级并行, 互不阻塞 |
+| **关联性全链路** | DeepSeek筛选 → CodeGraph结构 → 文件源码 → Impact审查 |
+| **记忆语义召回** | DeepSeek 从 101 个模式中选出相关案例注入 prompt |
+| **Skills Cache** | 29 条确定性 YAML 规则, 命中后直接跳过 LLM |
+| **三级路由** | fast(2 Agent) / dual(3) / full(4), 按 PR 规模自动选 |
 
 ---
 

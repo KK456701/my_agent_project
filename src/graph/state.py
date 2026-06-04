@@ -109,15 +109,11 @@ class DebateState(TypedDict):
     security_findings: Annotated[List[dict], operator.add]
     performance_findings: Annotated[List[dict], operator.add]
     architecture_findings: Annotated[List[dict], operator.add]
-
-    # --- 辩论阶段 ---
-    conflicts: List[dict]                      # 当前待解决的冲突列表
-    debate_round: int                          # 当前辩论轮次
-    debate_history: Annotated[List[dict], operator.add]  # 辩论历史
+    impact_findings: Annotated[List[dict], operator.add]
+    full_file_context: str                   # 变更文件的完整内容（注入 Impact Agent）
 
     # --- 输出 ---
     final_report: str                          # 最终审查报告
-    escalated: bool                            # 是否有升级给人类的问题
 
     # --- 元数据 ---
     total_tokens: int                          # Token 消耗统计

@@ -41,6 +41,11 @@ class Config:
     # 小于此行数的 PR 走快速通道（单 Agent）
     FAST_TRACK_MAX_LINES: int = int(os.getenv("FAST_TRACK_MAX_LINES", "50"))
 
+    # --- CodeGraph 项目路径 ---
+    # CodeGraph 需要本地项目路径来索引和查询代码图谱
+    # 设为你的项目根目录，如 F:\PRtest\testagentPR
+    PROJECT_ROOT: str = os.getenv("PROJECT_ROOT", "")
+
     # --- 输出 ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
